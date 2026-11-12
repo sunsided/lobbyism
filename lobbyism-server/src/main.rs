@@ -25,7 +25,7 @@ async fn main() -> Result<(), String> {
         Ok(path) => tracing::info!("loaded {}", path.display()),
         Err(e) if e.not_found() => {}
         // A broken .env would otherwise silently fall back to defaults.
-        Err(e) => return Err(format!(".env: {e}")),
+        Err(e) => return Err(format!(".env: {}", dotenv_error(&e))),
     }
 
     let bind = env::var("LOBBYISM_BIND").unwrap_or_else(|_| "127.0.0.1:7878".into());
@@ -89,4 +89,35 @@ fn parse_key(hex: &str) -> Result<[u8; 32], String> {
         *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| err())?;
     }
     Ok(key)
+}
+
+/// Describes a `.env` error without echoing the offending line, which may hold a secret.
+#[cfg(feature = "dotenv")]
+fn dotenv_error(e: &dotenvy::Error) -> String {
+    match e {
+        dotenvy::Error::LineParse(line, _) => {
+            let name = line.split('=').next().unwrap_or("").trim();
+            if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                format!("cannot parse the line for {name} (value not shown)")
+            } else {
+                "cannot parse a line (contents not shown)".into()
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
+#[cfg(all(test, feature = "dotenv"))]
+mod tests {
+    use super::dotenv_error;
+
+    #[test]
+    fn parse_errors_never_echo_values() {
+        let e = dotenvy::Error::LineParse("LOBBYISM_HMAC_SECRET=\"s3cr3t\n".into(), 21);
+        let msg = dotenv_error(&e);
+        assert!(!msg.contains("s3cr3t"), "{msg}");
+        assert!(msg.contains("LOBBYISM_HMAC_SECRET"), "{msg}");
+        let e = dotenvy::Error::LineParse("s3cr3t garbage\n".into(), 0);
+        assert!(!dotenv_error(&e).contains("s3cr3t"));
+    }
 }
