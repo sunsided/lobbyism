@@ -197,6 +197,8 @@ task ci       # check, test, then a short fuzz run
 
 The property tests throw random message sequences from several players at the state machine and check its internal bookkeeping after every step, and do the same with mutated login tokens. The fuzz targets in `fuzz/` (cargo-fuzz, nightly) cover incoming WebSocket frames, incoming tokens and the state machine again; `task fuzz:smoke` runs each briefly, `task fuzz:run TARGET=core_ops` for as long as you like.
 
+GitHub Actions runs the same checks on every push to `main` and every pull request, plus the renet example, a 30-second fuzz run per target, and [actionlint](https://github.com/rhysd/actionlint) and [zizmor](https://github.com/zizmorcore/zizmor) on the workflows themselves (`task lint:actions` does the latter locally). Pushing a tag `vX.Y.Z` that matches the crate version builds a static `x86_64-unknown-linux-musl` server binary and attaches it, with a SHA-256 checksum, to a GitHub release; nothing is published to crates.io yet.
+
 ## License
 
 Licensed under the [European Union Public Licence v. 1.2](LICENSE) (EUPL-1.2).
