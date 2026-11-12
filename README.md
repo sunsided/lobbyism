@@ -162,7 +162,7 @@ flowchart TB
 - `LOBBYISM_GAME_SERVERS` ends up inside every `ConnectToken`, and the renet server only accepts a token that lists one of its own `public_addresses`. So it has to be the address clients actually reach (not `0.0.0.0`, not a private IP behind NAT), and it has to match the game server's configuration exactly. The game server's UDP port needs to be open separately; the lobby only needs its TCP port.
 - Lobby tokens and `ConnectToken`s both carry expiry times, and a `ConnectToken` has to be used within `expire_seconds` (30 in the binary). Keep the lobby, the game server and your auth backend on NTP, or players will get rejected for no visible reason.
 - The server caps frames at 64 KiB, closes connections that don't authenticate within 10 seconds and drops clients that stop reading, but it has no per-IP connection or rate limits. Those belong in the proxy.
-- A matchbox ticket points at your matchbox_server, which you host separately; peers still need STUN (and for some networks TURN) to reach each other, which lobbyism doesn't provide.
+- A matchbox ticket points at your matchbox_server, which you host separately; peers still need STUN (and for some networks TURN) to reach each other, which lobbyism doesn't provide (see "NAT traversal" below).
 
 ## Tickets
 
@@ -171,6 +171,31 @@ For renet / netcode.io, `NetcodeIssuer` generates a real `ConnectToken` per play
 For matchbox / GGRS, `MatchboxIssuer` sends every player of a match the same signaling room URL with `?next=N`, so matchbox_server groups exactly those players; the player list in the match doubles as the GGRS peer list. The room name is an HMAC of the match id under a random per-process key, which keeps it unguessable (match ids are sequential, and a guessable room is a free seat for a stranger).
 
 Other transports implement `TicketIssuer`, which gets the match id, the player list and the recipient.
+
+## NAT traversal (STUN and friends)
+
+Most players sit behind a home router or a mobile carrier that rewrites their address (NAT), so the question isn't only who has a ticket but who can actually reach whom, and the answer depends on the transport.
+
+With a dedicated renet server on a public address, there is nothing to traverse: every client opens the connection outward, the router remembers the mapping, and the replies find their way back. The only requirement is the open UDP port on the game server (see "Network things to be aware of" above). It gets harder when one of the players hosts the game, since the host's router drops the other players' packets unless a port is forwarded (by hand or via UPnP) or a relay sits in between; lobbyism doesn't help with that today, as `NetcodeIssuer` expects fixed, reachable server addresses.
+
+matchbox uses WebRTC, which comes with its own toolbox for this, called ICE. A STUN server tells each peer which public address and port its router assigned, the peers exchange these candidates through the signaling server, and both send packets at the same time so each router sees outgoing traffic and lets the answers in (the "hole punching" part). That works for most home routers, but not when both sides are behind NATs that pick a new port for every destination (symmetric NAT, common with carrier-grade NAT on mobile networks and in some corporate networks); then only a TURN server helps, which relays all traffic between the peers and therefore costs real bandwidth.
+
+matchbox_socket uses Google's public STUN servers (`stun.l.google.com:19302` and `stun1.l.google.com:19302`) unless told otherwise, and no TURN server at all. For anything beyond testing, run your own, e.g. [coturn](https://github.com/coturn/coturn), which does both, and configure it on the client:
+
+```rust
+use matchbox_socket::{RtcIceServerConfig, WebRtcSocket};
+
+let (socket, message_loop) = WebRtcSocket::builder(room_url)
+    .ice_server(RtcIceServerConfig {
+        urls: vec!["stun:turn.example.com:3478".into(), "turn:turn.example.com:3478".into()],
+        username: Some(turn_username),
+        credential: Some(turn_password),
+    })
+    .add_unreliable_channel()
+    .build();
+```
+
+TURN credentials shouldn't be baked into the game, since anyone could then relay traffic through your server. coturn can accept short-lived credentials derived from a shared secret (`use-auth-secret`), and handing those out alongside the matchbox ticket would be a natural job for the lobby; it isn't implemented yet.
 
 ## Authentication
 
