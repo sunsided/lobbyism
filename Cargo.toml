@@ -8,5 +8,3 @@ version = "0.1.0"
 edition = "2024"
 license = "EUPL-1.2"
 repository = "https://github.com/sunsided/lobbyism"
-keywords = ["gamedev", "matchmaking", "lobby", "multiplayer", "renet"]
-categories = ["game-development", "network-programming"]

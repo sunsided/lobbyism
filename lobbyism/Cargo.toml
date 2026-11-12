@@ -1,12 +1,12 @@
 [package]
 name = "lobbyism"
-description = "Lobbies and matchmaking for Rust games: wire protocol and async WebSocket client (native and Wasm)"
+description = "Lobbies and matchmaking for Rust games: wire protocol and async WebSocket client (native and Wasm) that receives renet ConnectTokens or matchbox rooms"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["matchmaking", "lobby", "multiplayer", "gamedev", "renet"]
+categories = ["game-development", "network-programming", "wasm", "web-programming::websocket"]
 
 [features]
 default = ["client"]

@@ -1,12 +1,12 @@
 [package]
 name = "lobbyism-server"
-description = "Transport-agnostic lobby and matchmaking server"
+description = "Lobby and matchmaking server for Rust games: lobbies, skill-bucketed queues, and renet ConnectTokens or matchbox rooms for the game's own transport"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["matchmaking", "lobby", "multiplayer", "gamedev", "renet"]
+categories = ["game-development", "network-programming", "web-programming::websocket", "command-line-utilities"]
 
 [features]
 default = ["netcode", "cli", "dotenv"]
