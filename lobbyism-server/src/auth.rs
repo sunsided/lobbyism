@@ -69,8 +69,11 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Strict lowercase hex, so every tag has exactly one accepted spelling.
+/// (`from_str_radix` alone would also take `A` and a leading `+`.)
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) || !s.is_ascii() {
+    let lower_hex = |b: &u8| matches!(b, b'0'..=b'9' | b'a'..=b'f');
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| lower_hex(&b)) {
         return None;
     }
     (0..s.len())
@@ -108,6 +111,34 @@ mod tests {
         assert_eq!(v.validate(&v.sign(42, 1)), Err("token expired".into()));
         for junk in ["", ".", "1.2.zz", "1.2.é1", "no-dots"] {
             assert!(v.validate(junk).is_err(), "{junk}");
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn signed_tokens_validate(player: u64, ttl in 60u64..1 << 40) {
+            let v = HmacValidator::new(SECRET).unwrap();
+            let expires = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + ttl;
+            proptest::prop_assert_eq!(v.validate(&v.sign(player, expires)), Ok(player));
+        }
+
+        /// Any single-character change to a valid token is rejected, including
+        /// hex case flips and sign prefixes that decode to the same bytes.
+        #[test]
+        fn mutated_tokens_are_rejected(player: u64, pos: proptest::sample::Index, c: char) {
+            let v = HmacValidator::new(SECRET).unwrap();
+            let token = v.sign(player, far_future());
+            let i = pos.index(token.len());
+            proptest::prop_assume!(token.as_bytes()[i] as char != c);
+            let mut mutated = token.clone();
+            mutated.replace_range(i..=i, &c.to_string());
+            proptest::prop_assert!(v.validate(&mutated).is_err(), "{} accepted", mutated);
+        }
+
+        #[test]
+        fn arbitrary_input_never_panics(s in "\\PC*") {
+            let v = HmacValidator::new(SECRET).unwrap();
+            let _ = v.validate(&s);
         }
     }
 

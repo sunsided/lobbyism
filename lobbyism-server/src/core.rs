@@ -316,6 +316,62 @@ impl<I: TicketIssuer> Core<I> {
         players.iter().copied().zip(msgs).collect()
     }
 
+    /// Panics if the internal indexes disagree. Used by property tests and fuzzing.
+    #[cfg(any(test, fuzzing))]
+    pub fn check_invariants(&self) {
+        for (id, lobby) in &self.lobbies {
+            assert!(!lobby.members.is_empty(), "empty lobby {id} kept alive");
+            assert!(
+                lobby.members.len() <= lobby.max_players as usize,
+                "lobby {id} overfull"
+            );
+            assert!(
+                lobby.members.iter().any(|m| m.player == lobby.host),
+                "lobby {id} host is not a member"
+            );
+            for m in &lobby.members {
+                assert_eq!(
+                    self.player_lobby.get(&m.player),
+                    Some(id),
+                    "player {} index stale",
+                    m.player
+                );
+            }
+        }
+        // With the per-member check above, equal counts also rule out duplicate members.
+        let members: usize = self.lobbies.values().map(|l| l.members.len()).sum();
+        assert_eq!(
+            members,
+            self.player_lobby.len(),
+            "player_lobby has dangling entries"
+        );
+
+        for (key, queue) in &self.queues {
+            assert!(!queue.is_empty(), "empty queue {key:?} kept alive");
+            assert!(
+                queue.len() < self.config.modes[&key.mode] as usize,
+                "queue {key:?} should have matched"
+            );
+            for p in queue {
+                assert_eq!(
+                    self.player_queue.get(p),
+                    Some(key),
+                    "player {p} queue index stale"
+                );
+                assert!(
+                    !self.player_lobby.contains_key(p),
+                    "player {p} queued and in a lobby"
+                );
+            }
+        }
+        let queued: usize = self.queues.values().map(Vec::len).sum();
+        assert_eq!(
+            queued,
+            self.player_queue.len(),
+            "player_queue has dangling entries"
+        );
+    }
+
     fn ensure_idle(&self, player: PlayerId) -> Result<(), String> {
         if self.player_lobby.contains_key(&player) {
             return Err("already in a lobby".into());
@@ -634,5 +690,91 @@ mod tests {
             c.queues.values().all(|q| !q.is_empty()),
             "no empty queues linger"
         );
+    }
+
+    mod props {
+        use super::*;
+        use proptest::collection::{btree_map, vec};
+        use proptest::prelude::*;
+
+        /// One step: a message from a player, or that player disconnecting.
+        fn step() -> impl Strategy<Value = (PlayerId, Option<ClientMsg>)> {
+            let metadata = btree_map("[a-c]", "[a-z]{0,3000}", 0..3);
+            let msg = prop_oneof![
+                (0u32..6, metadata.clone()).prop_map(|(max_players, metadata)| {
+                    ClientMsg::CreateLobby {
+                        max_players,
+                        metadata,
+                    }
+                }),
+                (1u64..6).prop_map(|lobby| ClientMsg::JoinLobby { lobby }),
+                Just(ClientMsg::LeaveLobby),
+                metadata.prop_map(|metadata| ClientMsg::SetMetadata { metadata }),
+                any::<bool>().prop_map(|ready| ClientMsg::SetReady { ready }),
+                Just(ClientMsg::StartMatch),
+                (
+                    prop::sample::select(vec!["duel", "trio", "chess"]),
+                    prop::sample::select(vec!["eu", "us", "mars"]),
+                    0u32..300
+                )
+                    .prop_map(|(m, r, skill)| ClientMsg::Enqueue {
+                        mode: m.into(),
+                        region: r.into(),
+                        skill
+                    }),
+                Just(ClientMsg::CancelQueue),
+                Just(ClientMsg::Hello {
+                    token: String::new()
+                }),
+            ];
+            (1u64..7, prop::option::weighted(0.9, msg))
+        }
+
+        fn config() -> Config {
+            Config {
+                modes: HashMap::from([("duel".into(), 2), ("trio".into(), 3)]),
+                max_lobby_size: 4,
+                ..Config::default()
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn invariants_hold_for_any_op_sequence(steps in vec(step(), 0..80)) {
+                let mut c = Core::new(config(), MatchboxIssuer::new("ws://mb").unwrap());
+                for (player, msg) in steps {
+                    let out = match msg {
+                        Some(msg) => c.handle(player, msg),
+                        None => c.disconnect(player),
+                    };
+                    c.check_invariants();
+                    for (to, msg) in &out {
+                        if let ServerMsg::Matched(m) = msg {
+                            // Recipient sits at its handle and is free for the next game.
+                            prop_assert_eq!(m.players[m.handle], *to);
+                            prop_assert!(!c.player_lobby.contains_key(to) && !c.player_queue.contains_key(to));
+                        }
+                    }
+                }
+            }
+
+            /// Players queued with matching mode/region/bucket always pair up in arrival order.
+            #[test]
+            fn queue_pairs_in_fifo_order(skills in vec(0u32..100, 2..20)) {
+                let mut c = Core::new(config(), MatchboxIssuer::new("ws://mb").unwrap());
+                let mut matched = Vec::new();
+                for (i, skill) in skills.iter().enumerate() {
+                    let out = c.handle(i as PlayerId, ClientMsg::Enqueue { mode: "duel".into(), region: "eu".into(), skill: *skill });
+                    matched.extend(out.into_iter().filter_map(|(to, m)| match m {
+                        ServerMsg::Matched(m) if m.handle == 0 => Some((to, m.players)),
+                        _ => None,
+                    }));
+                }
+                prop_assert_eq!(matched.len(), skills.len() / 2);
+                for (k, (_, players)) in matched.iter().enumerate() {
+                    prop_assert_eq!(players, &vec![2 * k as PlayerId, 2 * k as PlayerId + 1]);
+                }
+            }
+        }
     }
 }

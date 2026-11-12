@@ -28,3 +28,10 @@ getrandom = "0.4"
 name = "lobbyism-server"
 path = "src/main.rs"
 required-features = ["cli"]
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.rust]
+# cargo-fuzz builds with `--cfg fuzzing`, which exposes `Core::check_invariants`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
