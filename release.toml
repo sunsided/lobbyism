@@ -1,0 +1,12 @@
+# cargo-release: one shared version for the workspace, one signed vX.Y.Z tag.
+# Usage: cargo release patch|minor|major|X.Y.Z (dry run), add --execute to do it.
+# Pushing the tag triggers .github/workflows/release.yml (GitHub release).
+shared-version = true
+consolidate-commits = true
+dependent-version = "upgrade"
+allow-branch = ["main"]
+pre-release-commit-message = "Release {{version}}"
+tag-name = "v{{version}}"
+tag-message = "Release {{version}}"
+sign-commit = true
+sign-tag = true

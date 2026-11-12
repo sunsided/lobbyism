@@ -4,6 +4,10 @@ description = "Transport-agnostic lobby and matchmaking server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = ["netcode", "cli", "dotenv"]
@@ -15,7 +19,7 @@ cli = ["netcode", "dep:tracing-subscriber"]
 dotenv = ["cli", "dep:dotenvy"]
 
 [dependencies]
-lobbyism = { path = "../lobbyism", default-features = false }
+lobbyism = { version = "0.1.0", path = "../lobbyism", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hmac = "0.13"
 renet_netcode = { version = "2", optional = true }
@@ -39,3 +43,7 @@ proptest = "1"
 [lints.rust]
 # cargo-fuzz builds with `--cfg fuzzing`, which exposes `Core::check_invariants`.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
+[package.metadata.release]
+# The workspace gets a single vX.Y.Z tag, created for the lobbyism crate.
+tag = false
