@@ -1,6 +1,9 @@
 //! Turning a formed match into something the game transport can connect with.
 
+use crate::auth::to_hex;
+use hmac::{Hmac, KeyInit, Mac};
 use lobbyism_proto::{MatchId, PlayerId, Ticket};
+use sha2::Sha256;
 
 /// Issues one player's connection ticket for a formed match.
 pub trait TicketIssuer: Send {
@@ -15,11 +18,26 @@ pub trait TicketIssuer: Send {
 
 /// Points every player of a match at the same matchbox signaling room.
 ///
-/// The room URL carries `?next=N`, so matchbox_server groups exactly the match's players.
-#[derive(Debug, Clone)]
+/// The room name is an HMAC of the match id under a random per-process key, so
+/// outsiders cannot guess it and take a seat; `?next=N` makes matchbox_server
+/// group exactly the match's players. The name only hides the room: a
+/// signaling server that checks per-player tokens is still the stronger gate.
+#[derive(Clone)]
 pub struct MatchboxIssuer {
-    /// Signaling server base URL, e.g. `wss://signal.example.com`.
-    pub base_url: String,
+    base_url: String,
+    room_key: [u8; 32],
+}
+
+impl MatchboxIssuer {
+    /// `base_url` is the signaling server, e.g. `wss://signal.example.com`.
+    pub fn new(base_url: impl Into<String>) -> Result<Self, String> {
+        let mut room_key = [0u8; 32];
+        getrandom::fill(&mut room_key).map_err(|e| format!("no OS randomness: {e}"))?;
+        Ok(Self {
+            base_url: base_url.into(),
+            room_key,
+        })
+    }
 }
 
 impl TicketIssuer for MatchboxIssuer {
@@ -29,9 +47,14 @@ impl TicketIssuer for MatchboxIssuer {
         players: &[PlayerId],
         _player: PlayerId,
     ) -> Result<Ticket, String> {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.room_key).expect("HMAC accepts any key length");
+        mac.update(&match_id.to_le_bytes());
+        // 128 bits is plenty for an unguessable room name.
+        let room = to_hex(&mac.finalize().into_bytes()[..16]);
         let base = self.base_url.trim_end_matches('/');
         Ok(Ticket::Matchbox {
-            room_url: format!("{base}/lobbyism_{match_id}?next={}", players.len()),
+            room_url: format!("{base}/lobbyism_{room}?next={}", players.len()),
         })
     }
 }

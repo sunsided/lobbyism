@@ -32,13 +32,7 @@ impl HmacValidator {
     /// Create a token for `player` that expires at `expires_unix` (seconds).
     pub fn sign(&self, player: PlayerId, expires_unix: u64) -> String {
         let payload = format!("{player}.{expires_unix}");
-        let tag: String = self
-            .mac(&payload)
-            .finalize()
-            .into_bytes()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let tag = to_hex(&self.mac(&payload).finalize().into_bytes());
         format!("{payload}.{tag}")
     }
 
@@ -69,6 +63,10 @@ impl TokenValidator for HmacValidator {
         }
         Ok(player)
     }
+}
+
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {

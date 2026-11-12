@@ -370,12 +370,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn core() -> Core<MatchboxIssuer> {
-        Core::new(
-            Config::default(),
-            MatchboxIssuer {
-                base_url: "ws://mb".into(),
-            },
-        )
+        Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap())
     }
 
     fn create(c: &mut Core<MatchboxIssuer>, host: PlayerId, max: u32) -> LobbyId {
@@ -555,6 +550,7 @@ mod tests {
         assert!(last_lobby(&out).members.iter().all(|m| m.ready));
         let out = c.handle(1, ClientMsg::StartMatch);
         assert_eq!(out.len(), 2);
+        let mut rooms = Vec::new();
         for (i, (p, msg)) in out.iter().enumerate() {
             let ServerMsg::Matched(m) = msg else {
                 panic!("{msg:?}")
@@ -562,13 +558,15 @@ mod tests {
             assert_eq!(m.players, vec![1, 2]);
             assert_eq!(m.handle, i);
             assert_eq!(m.players[m.handle], *p);
-            assert_eq!(
-                m.ticket,
-                Ticket::Matchbox {
-                    room_url: format!("ws://mb/lobbyism_{}?next=2", m.id)
-                }
-            );
+            let Ticket::Matchbox { room_url } = &m.ticket else {
+                panic!("{:?}", m.ticket)
+            };
+            rooms.push(room_url.clone());
         }
+        // Same room for both players, not derivable from the sequential match id.
+        assert_eq!(rooms[0], rooms[1]);
+        assert!(rooms[0].starts_with("ws://mb/lobbyism_") && rooms[0].ends_with("?next=2"));
+        assert_eq!(rooms[0].len(), "ws://mb/lobbyism_?next=2".len() + 32);
         // Lobby is consumed; both players are free again.
         assert!(is_error(&c.handle(3, ClientMsg::JoinLobby { lobby: id })));
         create(&mut c, 1, 2);

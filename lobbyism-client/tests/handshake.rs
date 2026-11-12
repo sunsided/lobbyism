@@ -9,12 +9,7 @@ async fn start() -> (String, HmacValidator) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
     let validator = HmacValidator::new(SECRET).unwrap();
-    let core = Core::new(
-        Config::default(),
-        MatchboxIssuer {
-            base_url: "ws://mb".into(),
-        },
-    );
+    let core = Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap());
     tokio::spawn(serve(listener, core, validator.clone()));
     (url, validator)
 }
