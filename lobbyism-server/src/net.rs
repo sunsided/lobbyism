@@ -1,8 +1,8 @@
-//! WebSocket front end: JSON text frames carrying `lobbyism_proto` messages.
+//! WebSocket front end: JSON text frames carrying `lobbyism::proto` messages.
 
 use crate::{Core, Outbox, TicketIssuer, TokenValidator};
 use futures_util::{SinkExt, StreamExt};
-use lobbyism_proto::{ClientMsg, PlayerId, ServerMsg};
+use lobbyism::proto::{ClientMsg, PlayerId, ServerMsg};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

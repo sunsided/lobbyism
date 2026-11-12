@@ -287,21 +287,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lobbyism"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "lobbyism-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
- "lobbyism-proto",
+ "lobbyism",
  "lobbyism-server",
  "serde_json",
-]
-
-[[package]]
-name = "lobbyism-proto"
-version = "0.1.0"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -311,7 +311,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hmac",
- "lobbyism-proto",
+ "lobbyism",
  "serde_json",
  "sha2",
  "tokio",

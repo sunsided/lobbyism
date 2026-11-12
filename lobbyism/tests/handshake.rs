@@ -1,6 +1,6 @@
 //! Wire-level checks of the server's authentication handshake.
 
-use lobbyism_client::{Error, LobbyClient};
+use lobbyism::{Error, LobbyClient};
 use lobbyism_server::{Config, Core, HmacValidator, MatchboxIssuer, serve};
 
 const SECRET: &[u8] = b"handshake-test-secret-32-bytes!!";

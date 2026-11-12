@@ -1,28 +1,9 @@
-//! Async client for `lobbyism-server`.
-//!
-//! Uses `tokio-tungstenite-wasm`, so the same code runs natively (tokio) and in
-//! the browser (`wasm32-unknown-unknown`).
-//!
-//! ```no_run
-//! # async fn demo(token: String) -> Result<(), lobbyism_client::Error> {
-//! use lobbyism_client::{LobbyClient, proto::{ClientMsg, ServerMsg}};
-//! let mut client = LobbyClient::connect("ws://127.0.0.1:7878", &token).await?;
-//! client.send(ClientMsg::Enqueue { mode: "duel".into(), region: "eu".into(), skill: 1200 }).await?;
-//! while let Some(msg) = client.recv().await? {
-//!     if let ServerMsg::Matched(m) = msg {
-//!         // hand m.ticket to renet / matchbox
-//!         break;
-//!     }
-//! }
-//! # Ok(()) }
-//! ```
+//! WebSocket client for `lobbyism-server`.
 
+use crate::proto::{ClientMsg, PlayerId, ServerMsg};
 use futures_util::{SinkExt, StreamExt};
-use lobbyism_proto::{ClientMsg, PlayerId, ServerMsg};
 use std::fmt;
 use tokio_tungstenite_wasm::{Message, WebSocketStream};
-
-pub use lobbyism_proto as proto;
 
 #[derive(Debug)]
 pub enum Error {

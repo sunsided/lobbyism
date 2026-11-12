@@ -1,4 +1,4 @@
-//! Wire protocol shared by `lobbyism-server` and `lobbyism-client`.
+//! Wire protocol shared by the client and `lobbyism-server`.
 //!
 //! Messages travel as JSON text frames over a WebSocket. The first client
 //! message on a connection must be [`ClientMsg::Hello`].

@@ -2,7 +2,7 @@
 
 use crate::auth::to_hex;
 use hmac::{Hmac, KeyInit, Mac};
-use lobbyism_proto::{MatchId, PlayerId, Ticket};
+use lobbyism::proto::{MatchId, PlayerId, Ticket};
 use sha2::Sha256;
 
 /// Issues one player's connection ticket for a formed match.

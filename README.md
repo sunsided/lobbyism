@@ -33,16 +33,15 @@ Lobbies end the same way: instead of `Enqueue`, players create or join a lobby, 
 
 | Crate | What it is |
 |---|---|
-| `lobbyism-proto` | The message types, JSON-encoded and tagged by `type`. |
-| `lobbyism-server` | The lobby and queue state machine (`Core`), the WebSocket front end (`serve`), token validation and ticket issuers, plus a `lobbyism-server` binary. |
-| `lobbyism-client` | An async client (`connect`, `send`, `recv`) on `tokio-tungstenite-wasm`, so the same code builds natively and for `wasm32-unknown-unknown`. |
+| `lobbyism` | The wire protocol (message types, JSON-encoded and tagged by `type`) and, behind the default `client` feature, an async client (`connect`, `send`, `recv`) on `tokio-tungstenite-wasm`, so the same code builds natively and for `wasm32-unknown-unknown`. |
+| `lobbyism-server` | The lobby and queue state machine (`Core`), the WebSocket front end (`serve`), token validation and ticket issuers, plus a `lobbyism-server` binary. It uses `lobbyism` with `default-features = false`, i.e. the protocol without the client. |
 
 ## Try it
 
 The example starts a renet game server, the lobby server and two clients in one process; both clients queue for a duel, get matched, and connect to the game server with their tickets:
 
 ```shell
-cargo run -p lobbyism-client --example renet_match
+cargo run -p lobbyism --example renet_match
 ```
 
 ```text
@@ -61,14 +60,14 @@ both players connected over renet
 lobbyism touches four parts of a multiplayer setup, and two of them are yours already:
 
 - Your auth backend logs players in however it likes and hands each one a lobby token, created with `HmacValidator::sign` (or anything else, if you put your own `TokenValidator` in front of the server).
-- Your game client uses `lobbyism-client` to queue or meet in a lobby, waits for `Matched`, and passes the ticket to renet or matchbox.
+- Your game client uses `lobbyism` to queue or meet in a lobby, waits for `Matched`, and passes the ticket to renet or matchbox.
 - Your dedicated game server (renet only) runs `ServerAuthentication::Secure` with the same netcode key and protocol id as the lobby, and reads the match id from each connection's user data.
 - The lobby server is either the `lobbyism-server` binary or the library embedded in a binary of yours, e.g. to add a host-migration hook or a different ticket issuer.
 
 On the client side, queueing looks like this:
 
 ```rust
-use lobbyism_client::{proto::{ClientMsg, ServerMsg, Ticket}, LobbyClient};
+use lobbyism::{ClientMsg, LobbyClient, ServerMsg, Ticket};
 
 let mut client = LobbyClient::connect("wss://lobby.example.com", &token).await?;
 client.send(ClientMsg::Enqueue { mode: "duel".into(), region: "eu".into(), skill: 1200 }).await?;

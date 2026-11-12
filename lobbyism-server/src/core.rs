@@ -4,7 +4,7 @@
 //! state machine is testable without sockets.
 
 use crate::ticket::TicketIssuer;
-use lobbyism_proto::{
+use lobbyism::proto::{
     ClientMsg, LobbyId, LobbyInfo, MatchId, MatchInfo, Member, Metadata, PlayerId, ServerMsg,
 };
 use std::collections::HashMap;
@@ -422,7 +422,7 @@ impl<I: TicketIssuer> Core<I> {
 mod tests {
     use super::*;
     use crate::ticket::MatchboxIssuer;
-    use lobbyism_proto::Ticket;
+    use lobbyism::proto::Ticket;
     use std::sync::{Arc, Mutex};
 
     fn core() -> Core<MatchboxIssuer> {

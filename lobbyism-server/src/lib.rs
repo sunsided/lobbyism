@@ -1,7 +1,7 @@
 //! Lobby and matchmaking server.
 //!
 //! - [`Core`]: in-memory lobby/queue state machine, transport-free.
-//! - [`serve`]: WebSocket front end speaking the `lobbyism-proto` JSON protocol.
+//! - [`serve`]: WebSocket front end speaking the `lobbyism` JSON protocol.
 //! - [`TokenValidator`] / [`HmacValidator`]: authentication at the trust boundary.
 //! - [`TicketIssuer`]: turns a formed match into a transport ticket
 //!   ([`NetcodeIssuer`] for renet / netcode.io, [`MatchboxIssuer`] for matchbox / GGRS).
@@ -13,7 +13,7 @@ mod ticket;
 
 pub use auth::{HmacValidator, TokenValidator};
 pub use core::{Config, Core, HostMigrationHook, Outbox};
-pub use lobbyism_proto as proto;
+pub use lobbyism::proto;
 pub use net::serve;
 #[cfg(feature = "netcode")]
 pub use ticket::NetcodeIssuer;

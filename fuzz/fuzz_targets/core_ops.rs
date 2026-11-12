@@ -4,7 +4,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use lobbyism_proto::{ClientMsg, Metadata, ServerMsg};
+use lobbyism::proto::{ClientMsg, Metadata, ServerMsg};
 use lobbyism_server::{Config, Core, MatchboxIssuer};
 use std::collections::HashMap;
 

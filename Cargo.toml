@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["lobbyism-proto", "lobbyism-server", "lobbyism-client"]
+members = ["lobbyism", "lobbyism-server"]
 exclude = ["fuzz"]
 
 [workspace.package]

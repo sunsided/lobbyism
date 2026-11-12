@@ -2,10 +2,10 @@
 //! server with the `ConnectToken` the lobby issued.
 //!
 //! Everything runs in one process: a renet game server, the lobby server and
-//! two lobby clients. Run with `cargo run -p lobbyism-client --example renet_match`.
+//! two lobby clients. Run with `cargo run -p lobbyism --example renet_match`.
 
-use lobbyism_client::LobbyClient;
-use lobbyism_client::proto::{ClientMsg, MatchInfo, ServerMsg, Ticket};
+use lobbyism::LobbyClient;
+use lobbyism::proto::{ClientMsg, MatchInfo, ServerMsg, Ticket};
 use lobbyism_server::{Config, Core, HmacValidator, NetcodeIssuer, serve};
 use renet::{ConnectionConfig, DefaultChannel, RenetClient, RenetServer, ServerEvent};
 use renet_netcode::{

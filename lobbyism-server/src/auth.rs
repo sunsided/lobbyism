@@ -1,7 +1,7 @@
 //! Authentication at the trust boundary: turning a client's `Hello` token into a [`PlayerId`].
 
 use hmac::{Hmac, KeyInit, Mac};
-use lobbyism_proto::PlayerId;
+use lobbyism::proto::PlayerId;
 use sha2::Sha256;
 use std::time::{SystemTime, UNIX_EPOCH};
 

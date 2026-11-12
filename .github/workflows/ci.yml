@@ -35,7 +35,9 @@ jobs:
       - run: cargo fmt --all --manifest-path fuzz/Cargo.toml -- --check
       - run: cargo clippy --locked --workspace --all-targets --all-features
       - name: Client builds for the browser
-        run: cargo check --locked -p lobbyism-client --target wasm32-unknown-unknown
+        run: cargo check --locked -p lobbyism --target wasm32-unknown-unknown
+      - name: Protocol-only build of lobbyism
+        run: cargo check --locked -p lobbyism --no-default-features
       - name: Server library without default features
         run: cargo check --locked -p lobbyism-server --no-default-features
       - name: Server binary without dotenv
@@ -58,7 +60,7 @@ jobs:
       - run: cargo test --locked --workspace --all-targets
       - run: cargo test --locked --workspace --doc
       - name: renet example
-        run: timeout 60 cargo run --locked -p lobbyism-client --example renet_match
+        run: timeout 60 cargo run --locked -p lobbyism --example renet_match
 
   fuzz:
     name: fuzz smoke

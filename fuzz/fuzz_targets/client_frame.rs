@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use lobbyism_proto::ClientMsg;
+use lobbyism::proto::ClientMsg;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(msg) = serde_json::from_slice::<ClientMsg>(data) else {
