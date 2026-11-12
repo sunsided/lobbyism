@@ -1,0 +1,29 @@
+[package]
+name = "lobbyism-server"
+description = "Transport-agnostic lobby and matchmaking server"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["netcode", "cli"]
+## Issue renet / netcode.io `ConnectToken`s.
+netcode = ["dep:renet_netcode"]
+## Build the `lobbyism-server` binary.
+cli = ["netcode", "dep:tracing-subscriber"]
+
+[dependencies]
+lobbyism-proto = { path = "../lobbyism-proto" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+hmac = "0.13"
+renet_netcode = { version = "2", optional = true }
+serde_json = "1"
+sha2 = "0.11"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = "0.29"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", optional = true }
+
+[[bin]]
+name = "lobbyism-server"
+path = "src/main.rs"
+required-features = ["cli"]

@@ -1,0 +1,17 @@
+[package]
+name = "lobbyism-client"
+description = "Async lobby/matchmaking client over WebSocket (native and Wasm)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lobbyism-proto = { path = "../lobbyism-proto" }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+serde_json = "1"
+tokio-tungstenite-wasm = "0.9"
+
+[dev-dependencies]
+lobbyism-server = { path = "../lobbyism-server" }
+renet = "2"
+renet_netcode = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
