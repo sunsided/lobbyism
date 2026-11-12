@@ -194,3 +194,7 @@ task ci       # check, test, then a short fuzz run
 ```
 
 The property tests throw random message sequences from several players at the state machine and check its internal bookkeeping after every step, and do the same with mutated login tokens. The fuzz targets in `fuzz/` (cargo-fuzz, nightly) cover incoming WebSocket frames, incoming tokens and the state machine again; `task fuzz:smoke` runs each briefly, `task fuzz:run TARGET=core_ops` for as long as you like.
+
+## License
+
+Licensed under the [European Union Public Licence v. 1.2](LICENSE) (EUPL-1.2).

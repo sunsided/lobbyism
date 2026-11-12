@@ -3,6 +3,7 @@ name = "lobbyism-proto"
 description = "Wire protocol for the lobby/matchmaking server and client"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

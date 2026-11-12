@@ -3,6 +3,7 @@ name = "lobbyism-client"
 description = "Async lobby/matchmaking client over WebSocket (native and Wasm)"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 lobbyism-proto = { path = "../lobbyism-proto" }

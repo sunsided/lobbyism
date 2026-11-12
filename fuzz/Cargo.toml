@@ -3,6 +3,7 @@ name = "lobbyism-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
+license = "EUPL-1.2"
 
 [package.metadata]
 cargo-fuzz = true
