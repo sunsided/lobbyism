@@ -8,10 +8,28 @@ This is v0.1 and not on crates.io yet. Everything lives in memory, so a restart 
 
 ## How it fits together
 
-1. The client authenticates with a token your backend signed and connects to the lobby server over WebSocket.
-2. Players either meet in a lobby (create, join, set ready, host starts) or enter a queue by mode, region and skill bucket.
-3. When a match forms, the server issues one ticket per player and sends it with the player list.
-4. The client hands the ticket to renet or matchbox and leaves the lobby behind.
+A player who queues for a match goes through this, end to end:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Your auth backend
+    participant C as Game client
+    participant L as lobbyism-server
+    participant G as Game server (renet)
+    C->>A: log in (your own flow)
+    A-->>C: lobby token (HmacValidator::sign)
+    C->>L: WebSocket: Hello { token }
+    L-->>C: Welcome { player }
+    C->>L: Enqueue { mode, region, skill }
+    L-->>C: Queued
+    Note over L: enough players in the same<br/>mode, region and skill bucket
+    L-->>C: Matched { players, handle, ticket }
+    C->>G: UDP: connect with the ConnectToken
+    Note over C,G: gameplay traffic never touches the lobby
+```
+
+Lobbies end the same way: instead of `Enqueue`, players create or join a lobby, mark themselves ready, and the host's `StartMatch` produces the same `Matched` message for every member.
 
 | Crate | What it is |
 |---|---|
@@ -116,6 +134,23 @@ In a real deployment the game server needs the same netcode key and protocol id,
 #### Where to host it
 
 The server is one small process with all state in memory: it needs little CPU and memory, but exactly one instance per game, as two instances would not see each other's lobbies or queues (and a restart drops everything, so clients should reconnect and re-queue). A small VM or a single container, close to most of your players, does the job. Serverless platforms that cut requests after a few seconds or minutes don't fit, since every client holds one WebSocket open for as long as it is looking for a game.
+
+A typical setup, with the lobby behind a TLS proxy and the secrets each pair of services has to share:
+
+```mermaid
+flowchart TB
+    C[Game client]
+    A[Your auth backend]
+    subgraph lobbyhost[Lobby host]
+        P["Reverse proxy<br/>TLS on :443"] -->|"127.0.0.1:7878"| L[lobbyism-server]
+    end
+    G["Game server (renet)<br/>UDP :5000"]
+    C -->|"1 log in"| A
+    C -->|"2 wss://"| P
+    C -->|"3 UDP + ConnectToken"| G
+    A -. "same HMAC secret" .- L
+    L -. "same netcode key + protocol id" .- G
+```
 
 #### Network things to be aware of
 
