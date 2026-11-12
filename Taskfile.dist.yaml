@@ -1,0 +1,111 @@
+version: '3'
+
+includes:
+  fuzz:
+    taskfile: fuzz/Taskfile.dist.yaml
+    dir: fuzz
+
+tasks:
+  default:
+    cmds:
+      - task --list --sort=none
+    silent: true
+
+  build:
+    desc: Build the workspace, then check the fuzz targets still compile
+    preconditions: &cargo
+      - sh: command -v cargo
+        msg: "cargo not found — install Rust from https://rustup.rs/"
+    cmds:
+      - cargo build --workspace --all-targets
+      - task: fuzz:build
+
+  run:
+    desc: Run the lobby server (configure via LOBBYISM_* env vars, see lobbyism-server/src/main.rs)
+    preconditions: *cargo
+    cmds:
+      - cargo run -p lobbyism-server -- {{.CLI_ARGS}}
+
+  run:example:
+    desc: Match two clients and connect them over renet
+    preconditions: *cargo
+    cmds:
+      - cargo run -p lobbyism-client --example renet_match
+
+  test:
+    desc: Run unit, property and integration tests (PROPTEST_CASES=n for deeper runs)
+    preconditions: *cargo
+    cmds:
+      - cargo test --workspace --all-targets {{.CLI_ARGS}}
+      - cargo test --workspace --doc
+
+  fmt:
+    desc: Format all Rust sources
+    aliases: [format]
+    preconditions: *cargo
+    cmds:
+      - cargo fmt --all
+      - cargo fmt --all --manifest-path fuzz/Cargo.toml
+
+  fmt:check:
+    desc: Check formatting without modifying files
+    preconditions: *cargo
+    cmds:
+      - cargo fmt --all -- --check
+      - cargo fmt --all --manifest-path fuzz/Cargo.toml -- --check
+
+  lint:
+    desc: Run clippy across the workspace (warnings as errors)
+    preconditions: *cargo
+    cmds:
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  lint:fix:
+    desc: Auto-fix clippy lints, then format
+    aliases: [fix]
+    preconditions: *cargo
+    cmds:
+      - cargo clippy --workspace --all-targets --all-features --fix --allow-dirty --allow-staged
+      - task: fmt
+
+  check:wasm:
+    desc: Check the client still builds for the browser
+    preconditions:
+      - sh: rustup target list --installed | grep -q wasm32-unknown-unknown
+        msg: "wasm target missing — rustup target add wasm32-unknown-unknown"
+    cmds:
+      - cargo check -p lobbyism-client --target wasm32-unknown-unknown
+
+  check:
+    desc: All static checks (fmt, clippy, wasm client, server without default features)
+    preconditions: *cargo
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: check:wasm
+      - cargo check -p lobbyism-server --no-default-features
+
+  ci:
+    desc: Full CI sequence (check, test, fuzz smoke)
+    cmds:
+      - task: check
+      - task: test
+      - task: fuzz:smoke
+
+  docs:
+    desc: Build API docs
+    preconditions: *cargo
+    cmds:
+      - cargo doc --workspace --no-deps
+
+  docs:open:
+    desc: Build API docs and open them
+    preconditions: *cargo
+    cmds:
+      - cargo doc --workspace --no-deps --open
+
+  clean:
+    desc: Remove cargo build output
+    preconditions: *cargo
+    cmds:
+      - cargo clean
