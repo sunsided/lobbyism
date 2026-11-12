@@ -4,7 +4,9 @@ Lobbies and matchmaking for Rust games: players find each other here, then conne
 
 Rust has good transports (renet, quinn, matchbox, ggrs), but not so much on getting players together before they connect: there is no counterpart to Steam lobbies or a small master server you can embed. lobbyism is an attempt at that missing piece, and it deliberately stops where the existing crates start: when a match is formed, every player gets a connection ticket for the transport (a renet `ConnectToken`, or a matchbox room), and the lobby never sees a single gameplay packet.
 
-This is v0.1 and not on crates.io yet. Everything lives in memory, so a restart forgets all lobbies and queues.
+In case these names are new: [renet](https://github.com/lucaspoffo/renet) is a client-server networking library for games that sends reliable and unreliable messages over UDP, and its `renet_netcode` transport implements the [netcode.io](https://github.com/mas-bandwidth/netcode) protocol, in which a backend hands each player an encrypted `ConnectToken` and the game server only lets in clients that present one (lobbyism plays that backend). [matchbox](https://github.com/johanhelsing/matchbox) connects players peer-to-peer over WebRTC, natively and in the browser, with a small signaling server introducing the peers to each other, and [GGRS](https://github.com/gschup/ggrs) is rollback netcode that commonly runs on top of it.
+
+This is a young project. Everything lives in memory, so a restart forgets all lobbies and queues.
 
 ## How it fits together
 
@@ -196,7 +198,9 @@ task ci       # check, test, then a short fuzz run
 
 The property tests throw random message sequences from several players at the state machine and check its internal bookkeeping after every step, and do the same with mutated login tokens. The fuzz targets in `fuzz/` (cargo-fuzz, nightly) cover incoming WebSocket frames, incoming tokens and the state machine again; `task fuzz:smoke` runs each briefly, `task fuzz:run TARGET=core_ops` for as long as you like.
 
-GitHub Actions runs the same checks on every push to `main` and every pull request, plus the renet example, a 30-second fuzz run per target, and [actionlint](https://github.com/rhysd/actionlint) and [zizmor](https://github.com/zizmorcore/zizmor) on the workflows themselves (`task lint:actions` does the latter locally). Pushing a tag `vX.Y.Z` that matches the crate version builds a static `x86_64-unknown-linux-musl` server binary and attaches it, with a SHA-256 checksum, to a GitHub release; nothing is published to crates.io yet.
+GitHub Actions runs the same checks on every push to `main` and every pull request, plus the renet example, a 30-second fuzz run per target, and [actionlint](https://github.com/rhysd/actionlint) and [zizmor](https://github.com/zizmorcore/zizmor) on the workflows themselves (`task lint:actions` does the latter locally).
+
+Releases go through [cargo-release](https://github.com/crate-ci/cargo-release), configured in `release.toml`: both crates share one version, and `cargo release patch` (or `minor`, `major`, an explicit `X.Y.Z`, or no argument to release the current version) shows what would happen; with `--execute` it bumps the version, commits, creates a signed `vX.Y.Z` tag, publishes `lobbyism` and then `lobbyism-server` to crates.io, and pushes. The tag in turn triggers the release workflow, which checks it against the crate version, runs the tests, and attaches a static `x86_64-unknown-linux-musl` server binary with a SHA-256 checksum to a GitHub release.
 
 ## License
 
