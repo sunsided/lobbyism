@@ -1,0 +1,39 @@
+[package]
+name = "lobbyism-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+lobbyism-proto = { path = "../lobbyism-proto" }
+lobbyism-server = { path = "../lobbyism-server", default-features = false }
+serde_json = "1"
+
+# Own workspace, so the stable root workspace never builds these nightly-only targets.
+[workspace]
+
+[[bin]]
+name = "client_frame"
+path = "fuzz_targets/client_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "token"
+path = "fuzz_targets/token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "core_ops"
+path = "fuzz_targets/core_ops.rs"
+test = false
+doc = false
+bench = false

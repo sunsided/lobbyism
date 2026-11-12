@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["lobbyism-proto", "lobbyism-server", "lobbyism-client"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"

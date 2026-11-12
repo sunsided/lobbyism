@@ -1,0 +1,50 @@
+version: '3'
+
+# cargo-fuzz targets (nightly). Included from the root Taskfile as "fuzz:".
+# Standalone use: run `task` from this directory.
+
+vars:
+  TARGETS: client_frame token core_ops
+  TARGET: '{{ .TARGET | default "core_ops" }}'
+  FUZZ_SECONDS: '{{ .FUZZ_SECONDS | default "10" }}'
+
+tasks:
+  default:
+    cmds:
+      - task --list --sort=none
+    silent: true
+
+  list:
+    desc: List fuzz targets
+    preconditions: &nightly
+      - sh: command -v cargo-fuzz
+        msg: "cargo-fuzz not found — cargo install cargo-fuzz"
+      - sh: rustup toolchain list | grep -q nightly
+        msg: "Rust nightly toolchain required — rustup toolchain install nightly"
+    cmds:
+      - cargo +nightly fuzz list
+
+  build:
+    desc: Build all fuzz targets
+    preconditions: *nightly
+    cmds:
+      - cargo +nightly fuzz build
+
+  run:
+    desc: Fuzz one target until stopped (TARGET=name, libFuzzer flags after --)
+    preconditions: *nightly
+    cmds:
+      - cargo +nightly fuzz run {{.TARGET}} -- {{.CLI_ARGS}}
+
+  smoke:
+    desc: Run every fuzz target briefly (FUZZ_SECONDS each, default 10)
+    preconditions: *nightly
+    cmds:
+      - for: { var: TARGETS }
+        cmd: cargo +nightly fuzz run {{.ITEM}} -- -max_total_time={{.FUZZ_SECONDS}}
+
+  clean:
+    desc: Remove fuzz build output, corpora and crash artifacts
+    prompt: Delete fuzz corpora and crash artifacts?
+    cmds:
+      - rm -rf target corpus artifacts coverage
