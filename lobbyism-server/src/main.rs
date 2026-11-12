@@ -8,6 +8,10 @@
 //! - `LOBBYISM_GAME_SERVERS`  comma-separated game server addresses (required)
 //! - `LOBBYISM_MODES`         `mode=players,...`, default `duel=2`
 //! - `LOBBYISM_REGIONS`       comma-separated regions, default `eu,us`
+//!
+//! With the `dotenv` feature (on by default), a `.env` file in the working
+//! directory or one of its parents is loaded first; variables already set in
+//! the environment take precedence.
 
 use lobbyism_server::{Config, Core, HmacValidator, NetcodeIssuer, serve};
 use std::env;
@@ -15,6 +19,14 @@ use std::env;
 #[tokio::main]
 async fn main() -> Result<(), String> {
     tracing_subscriber::fmt::init();
+
+    #[cfg(feature = "dotenv")]
+    match dotenvy::dotenv() {
+        Ok(path) => tracing::info!("loaded {}", path.display()),
+        Err(e) if e.not_found() => {}
+        // A broken .env would otherwise silently fall back to defaults.
+        Err(e) => return Err(format!(".env: {e}")),
+    }
 
     let bind = env::var("LOBBYISM_BIND").unwrap_or_else(|_| "127.0.0.1:7878".into());
     let validator = HmacValidator::new(required("LOBBYISM_HMAC_SECRET")?)?;

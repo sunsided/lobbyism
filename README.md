@@ -129,6 +129,8 @@ LOBBYISM_GAME_SERVERS=127.0.0.1:5000 \
 cargo run -p lobbyism-server
 ```
 
+The binary also reads a `.env` file from the working directory (or one of its parents) before it starts, so `cp .env.example .env`, filling in the two secrets and `cargo run -p lobbyism-server` works too. Variables that are already set in the environment win over the file, and a `.env` that doesn't parse stops the server instead of being skipped. Building with `--no-default-features --features cli` leaves this out, for deployments where the environment comes from the orchestrator anyway.
+
 In a real deployment the game server needs the same netcode key and protocol id, and your auth backend the same HMAC secret, so all three come from your secret store rather than a fresh `openssl` call. The netcode key and the HMAC secret must never reach a client.
 
 #### Where to host it

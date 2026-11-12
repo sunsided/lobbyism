@@ -6,11 +6,13 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = ["netcode", "cli"]
+default = ["netcode", "cli", "dotenv"]
 ## Issue renet / netcode.io `ConnectToken`s.
 netcode = ["dep:renet_netcode"]
 ## Build the `lobbyism-server` binary.
 cli = ["netcode", "dep:tracing-subscriber"]
+## Let the binary read `LOBBYISM_*` variables from a `.env` file (real environment variables win).
+dotenv = ["cli", "dep:dotenvy"]
 
 [dependencies]
 lobbyism-proto = { path = "../lobbyism-proto" }
@@ -24,6 +26,7 @@ tokio-tungstenite = "0.29"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", optional = true }
 getrandom = "0.4"
+dotenvy = { version = "0.15.7", optional = true }
 
 [[bin]]
 name = "lobbyism-server"
