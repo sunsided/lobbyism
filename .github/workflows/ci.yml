@@ -47,6 +47,8 @@ jobs:
         run: cargo check --locked -p lobbyism-server --no-default-features
       - name: Server binary without dotenv
         run: cargo check --locked -p lobbyism-server --no-default-features --features cli
+      - name: Server LAN helpers without netcode
+        run: cargo check --locked -p lobbyism-server --no-default-features --features lan-broadcast,lan-mdns
 
   test:
     name: tests
@@ -62,7 +64,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test --locked --workspace --all-targets
+      - run: cargo test --locked --workspace --all-targets --all-features
       - run: cargo test --locked --workspace --doc
       - name: renet example
         run: timeout 60 cargo run --locked -p lobbyism --example renet_match

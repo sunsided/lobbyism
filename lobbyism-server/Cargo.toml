@@ -16,6 +16,12 @@ netcode = ["dep:renet_netcode"]
 cli = ["netcode", "dep:tracing-subscriber"]
 ## Let the binary read `LOBBYISM_*` variables from a `.env` file (real environment variables win).
 dotenv = ["cli", "dep:dotenvy"]
+## LAN play helpers: `lan_addresses` for the host's tickets.
+lan = ["dep:if-addrs"]
+## Announce a LAN host by UDP broadcast.
+lan-broadcast = ["lan"]
+## Announce a LAN host over mDNS / DNS-SD.
+lan-mdns = ["lan", "dep:mdns-sd"]
 
 [dependencies]
 lobbyism = { version = "0.1.1", path = "../lobbyism", default-features = false }
@@ -30,6 +36,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", optional = true }
 getrandom = "0.4"
 dotenvy = { version = "0.15.7", optional = true }
+if-addrs = { version = "0.15", optional = true }
+mdns-sd = { version = "0.21", optional = true }
 
 [[bin]]
 name = "lobbyism-server"
@@ -46,3 +54,7 @@ workspace = true
 [package.metadata.release]
 # The workspace gets a single vX.Y.Z tag, created for the lobbyism crate.
 tag = false
+
+[package.metadata.docs.rs]
+# Document the feature-gated LAN API too.
+all-features = true

@@ -71,6 +71,79 @@ impl TokenValidator for HmacValidator {
     }
 }
 
+/// Validator for LAN play, where there is no auth backend to sign tokens.
+///
+/// Every connection gets a fresh random [`PlayerId`], so a player who
+/// reconnects comes back as somebody new. [`LanValidator::open`] lets in anyone
+/// who can reach the port; [`LanValidator::with_code`] additionally requires
+/// the `Hello` token to equal a join code the host shows its friends.
+///
+/// A join code keeps out people who don't know it, nothing more. The server
+/// has no rate limits, so someone on the network can try codes as fast as they
+/// can connect, which is why codes need at least 8 characters (make them
+/// random). And `serve` speaks plain `ws://`, so the code crosses the network
+/// in cleartext: anyone who can sniff the LAN (open or shared WiFi) can read
+/// it, and a joiner sends it to whatever address an announcement points at.
+#[derive(Clone)]
+pub struct LanValidator {
+    /// The required join code, if any.
+    code: Option<Vec<u8>>,
+}
+
+impl LanValidator {
+    /// Anyone on the network may join; the token is ignored.
+    pub fn open() -> Self {
+        Self { code: None }
+    }
+
+    /// Only clients whose `Hello` token equals `code` may join.
+    ///
+    /// Refuses codes shorter than [`LanValidator::MIN_CODE_CHARS`] characters;
+    /// an empty code in particular would let in every client that sends an
+    /// empty token, while the lobby still announces that it needs a code.
+    pub fn with_code(code: impl Into<String>) -> Result<Self, String> {
+        let code = code.into();
+        if code.chars().count() < Self::MIN_CODE_CHARS {
+            return Err(format!(
+                "join code must have at least {} characters",
+                Self::MIN_CODE_CHARS
+            ));
+        }
+        Ok(Self {
+            code: Some(code.into_bytes()),
+        })
+    }
+
+    /// Shortest join code [`LanValidator::with_code`] accepts.
+    pub const MIN_CODE_CHARS: usize = 8;
+
+    /// Whether clients need the join code; goes into `LanAnnouncement::code_required`.
+    pub fn code_required(&self) -> bool {
+        self.code.is_some()
+    }
+}
+
+impl TokenValidator for LanValidator {
+    /// Checks the join code in constant time, then hands out a random player id.
+    fn validate(&self, token: &str) -> Result<PlayerId, String> {
+        if let Some(code) = &self.code {
+            // Comparing MACs of both strings is constant-time without a new dependency.
+            // (They go in as messages: as HMAC keys, "x" and "x\0" would be equal.)
+            let mac = |s: &[u8]| {
+                let mut m = Hmac::<Sha256>::new_from_slice(b"lobbyism-lan").expect("any key");
+                m.update(s);
+                m
+            };
+            mac(code)
+                .verify(&mac(token.as_bytes()).finalize().into_bytes())
+                .map_err(|_| "invalid join code")?;
+        }
+        let mut id = [0u8; 8];
+        getrandom::fill(&mut id).map_err(|e| format!("no OS randomness: {e}"))?;
+        Ok(PlayerId::from_le_bytes(id))
+    }
+}
+
 /// Lowercase hex encoding, the inverse of [`decode_hex`].
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -153,6 +226,40 @@ mod tests {
         fn arbitrary_input_never_panics(s in "\\PC*") {
             let v = HmacValidator::new(SECRET).unwrap();
             let _ = v.validate(&s);
+        }
+    }
+
+    /// An open LAN validator lets anyone in, each with a new id.
+    #[test]
+    fn open_lan_validator_hands_out_fresh_ids() {
+        let v = LanValidator::open();
+        assert!(!v.code_required());
+        let a = v.validate("").unwrap();
+        let b = v.validate("anything").unwrap();
+        assert_ne!(a, b);
+    }
+
+    /// Empty and short join codes are refused up front.
+    #[test]
+    fn short_lan_join_codes_are_refused() {
+        for code in ["", "1234", "k7Qp2xW"] {
+            assert!(LanValidator::with_code(code).is_err(), "{code:?}");
+        }
+        assert!(LanValidator::with_code("k7Qp2xWm").is_ok());
+    }
+
+    /// With a join code, only the exact code gets in.
+    #[test]
+    fn lan_join_code_must_match() {
+        let v = LanValidator::with_code("k7Qp2xWm").unwrap();
+        assert!(v.code_required());
+        assert!(v.validate("k7Qp2xWm").is_ok());
+        for wrong in ["", "k7Qp2xW", "k7Qp2xWm ", "k7Qp2xWm\0", "K7QP2XWM"] {
+            assert_eq!(
+                v.validate(wrong),
+                Err("invalid join code".into()),
+                "{wrong}"
+            );
         }
     }
 

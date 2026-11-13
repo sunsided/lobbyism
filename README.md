@@ -186,7 +186,7 @@ Other transports implement `TicketIssuer`, which gets the match id, the player l
 
 Most players sit behind a home router or a mobile carrier that rewrites their address (NAT), so the question isn't only who has a ticket but who can actually reach whom, and the answer depends on the transport.
 
-With a dedicated renet server on a public address, there is nothing to traverse: every client opens the connection outward, the router remembers the mapping, and the replies find their way back. The only requirement is the open UDP port on the game server (see "Network things to be aware of" above). It gets harder when one of the players hosts the game, since the host's router drops the other players' packets unless a port is forwarded (by hand or via UPnP) or a relay sits in between; lobbyism doesn't help with that today, as `NetcodeIssuer` expects fixed, reachable server addresses.
+With a dedicated renet server on a public address, there is nothing to traverse: every client opens the connection outward, the router remembers the mapping, and the replies find their way back. The only requirement is the open UDP port on the game server (see "Network things to be aware of" above). It gets harder when one of the players hosts the game, since the host's router drops the other players' packets unless a port is forwarded (by hand or via UPnP) or a relay sits in between; lobbyism doesn't help with that over the internet. On a local network there is no NAT in the way, which is what "LAN play" below builds on.
 
 matchbox uses WebRTC, which comes with its own toolbox for this, called ICE. A STUN server tells each peer which public address and port its router assigned, the peers exchange these candidates through the signaling server, and both send packets at the same time so each router sees outgoing traffic and lets the answers in (the "hole punching" part). That works for most home routers, but not when both sides are behind NATs that pick a new port for every destination (symmetric NAT, common with carrier-grade NAT on mobile networks and in some corporate networks); then only a TURN server helps, which relays all traffic between the peers and therefore costs real bandwidth.
 
@@ -207,6 +207,64 @@ let (socket, message_loop) = WebRtcSocket::builder(room_url)
 
 TURN credentials shouldn't be baked into the game, since anyone could then relay traffic through your server. coturn can accept short-lived credentials derived from a shared secret (`use-auth-secret`), and handing those out alongside the matchbox ticket would be a natural job for the lobby; it isn't implemented yet.
 
+## LAN play
+
+Players on the same LAN or WiFi can play without any hosted infrastructure: one player's game runs the lobby server and the renet game server in its own process (a "listen server"), and the others find it on the network. Nothing about the protocol changes, joiners still get a `Matched` with a `ConnectToken`; only three things are different from a hosted setup:
+
+- **Authentication**: there is no backend to sign tokens, so the host uses `LanValidator`. `LanValidator::open()` lets in anyone who can reach the port and ignores the token; `LanValidator::with_code(code)` only accepts a `Hello` whose token is that join code, for a game that shows the host a code to read out to friends. Either way every connection gets a fresh random player id. The server has no rate limits, so `with_code` refuses codes under 8 characters; make them random, not a PIN with padding. A code only keeps out people who don't know it: the lobby speaks plain `ws://`, so on an open or shared WiFi anyone sniffing can read it, and a joiner sends it to whatever address an announcement points at.
+- **Ticket addresses**: `lobbyism_server::lan::lan_addresses(game_port)` (feature `lan`) lists the host's network addresses for `NetcodeIssuer::server_addresses` and the renet server's `public_addresses`. The netcode key can be made up per session with `generate_random_bytes`, since lobby and game server live in the same process and the key never leaves it.
+- **Discovery**: the host announces a `LanAnnouncement` (game, display name, lobby port, lobby id, whether a code is needed), and joiners collect them:
+
+| | Host (`lobbyism-server`) | Joiner (`lobbyism`) |
+|---|---|---|
+| UDP broadcast, once a second to a port of your choice | `lan::announce_broadcast` (feature `lan-broadcast`) | `lan::discover_broadcast` (feature `lan-broadcast`) |
+| mDNS / DNS-SD, service `_lobbyism._tcp` | `lan::announce_mdns` (feature `lan-mdns`) | `lan::discover_mdns` (feature `lan-mdns`) |
+| Neither: the player types the address | print `ws://<lan address>:<port>` and the lobby id | `LobbyClient::connect` directly |
+
+Broadcast needs no extra dependency and works on almost every home network; mDNS brings in `mdns-sd`, shows up in tools like `avahi-browse`, and copes better with hosts on several networks, but multicast is filtered on some WiFi access points. Both can run side by side. The `game` field keeps different games (or incompatible versions) apart, so put a version in it.
+
+The host's side, condensed from `lobbyism/examples/lan_match.rs`:
+
+```rust
+use lobbyism_server::lan::{announce_broadcast, lan_addresses};
+use lobbyism_server::{serve, Config, Core, LanValidator, NetcodeIssuer};
+
+let private_key = renet_netcode::generate_random_bytes();
+let game_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;  // the renet server's socket
+let issuer = NetcodeIssuer {
+    protocol_id: 7,
+    private_key,
+    server_addresses: lan_addresses(game_socket.local_addr()?.port())?,
+    expire_seconds: 30,
+    timeout_seconds: 15,
+};
+let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
+let lobby_port = listener.local_addr()?.port();
+tokio::spawn(serve(listener, Core::new(Config::default(), issuer), LanValidator::open()));
+// connect to ws://127.0.0.1:{lobby_port} yourself, CreateLobby, then announce its id:
+tokio::spawn(async move { announce_broadcast(47_800, &announcement).await });
+```
+
+and the joiner's:
+
+```rust
+let hosts = lobbyism::lan::discover_broadcast(47_800, "my-game/1.4", Duration::from_secs(3)).await?;
+let host = &hosts[0];  // or let the player pick
+let mut client = LobbyClient::connect(&host.url(), "").await?;  // or the join code
+client.send(ClientMsg::JoinLobby { lobby: host.announcement.lobby }).await?;
+```
+
+To try it, run `cargo run -p lobbyism --example lan_match --features lan-broadcast -- host` on one machine and the same with `-- join` on another (or a second terminal).
+
+Things that get in the way on real networks:
+
+- Guest WiFi, hotel and campus networks, and access points with "client isolation" don't let devices talk to each other at all; neither discovery nor the game works there.
+- Desktop firewalls (Windows Defender in particular) block incoming connections for a new program until the player allows it; the host needs the lobby's TCP port, the game's UDP port and, for joiners, the discovery UDP port (or 5353 for mDNS).
+- `lan_addresses` includes every interface that is up, VPNs and Docker bridges too. A joiner tries the addresses in the token in order, so one it can't reach costs it a connection timeout; filter the list if your players commonly have those.
+- Browsers can't do UDP or mDNS, so the `lan-*` features don't build for wasm32, and a page served over `https://` can't open `ws://` to a LAN address anyway. Browser players need the hosted setup.
+- Announcements come from anyone on the network and are only a hint where to connect; they say nothing about whether the host is who it claims to be.
+- matchbox tickets would need a signaling server on the host as well, so LAN play is renet-only for now.
+
 ## Authentication
 
 The first message on a connection must be `Hello { token }`, sent within 10 seconds. The default `HmacValidator` expects tokens of the form
@@ -215,7 +273,7 @@ The first message on a connection must be `Hello { token }`, sent within 10 seco
 <player id>.<expiry, unix seconds>.<lowercase hex HMAC-SHA256 of the first two parts>
 ```
 
-which your backend creates with `HmacValidator::sign` after its own login. The lobby only checks them, and a player can hold one connection at a time. Anything else (sessions, JWTs, Steam tickets) goes behind the `TokenValidator` trait.
+which your backend creates with `HmacValidator::sign` after its own login (for LAN play without a backend, see `LanValidator` above). The lobby only checks them, and a player can hold one connection at a time. Anything else (sessions, JWTs, Steam tickets) goes behind the `TokenValidator` trait.
 
 ## Limitations
 
