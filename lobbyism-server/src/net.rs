@@ -18,6 +18,8 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Outgoing messages buffered per client before it counts as too slow and is dropped.
 const OUTBOX_CAPACITY: usize = 256;
+/// Pause after a failed `accept()`, so running out of file descriptors doesn't spin.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// State shared by all connections, behind one mutex.
 struct Shared<I> {
@@ -57,7 +59,16 @@ where
     }));
     let validator = Arc::new(validator);
     loop {
-        let (stream, addr) = listener.accept().await?;
+        let (stream, addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            // Aborted handshakes and running out of file descriptors are
+            // transient; only this one connection is lost, not the server.
+            Err(e) => {
+                tracing::warn!("accept failed: {e}");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
         let (shared, validator) = (shared.clone(), validator.clone());
         tokio::spawn(async move {
             if let Err(e) = connection(stream, shared, &*validator).await {
