@@ -168,6 +168,58 @@ pub enum Ticket {
     },
 }
 
+/// Largest UDP broadcast announcement, in bytes of JSON; longer ones are not sent or read.
+pub const LAN_MAX_ANNOUNCEMENT_BYTES: usize = 1024;
+
+/// mDNS / DNS-SD service type that LAN hosts register under.
+pub const LAN_MDNS_SERVICE: &str = "_lobbyism._tcp.local.";
+
+/// What a LAN host announces so players on the same network can find it.
+///
+/// Sent as JSON in a UDP broadcast datagram, or as mDNS TXT properties
+/// ([`LanAnnouncement::to_txt`]). Anyone on the network can send one, so
+/// joiners treat it as untrusted: it only says where to connect.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LanAnnouncement {
+    /// Identifies the game (and ideally its version); joiners ignore other games.
+    pub game: String,
+    /// Display name of the host or session, for a server browser.
+    pub name: String,
+    /// TCP port of the host's lobby server (`ws://<host address>:<port>`).
+    pub lobby_port: u16,
+    /// The lobby to send in `ClientMsg::JoinLobby`.
+    pub lobby: LobbyId,
+    /// Whether the `Hello` token must be the host's join code.
+    pub code_required: bool,
+}
+
+impl LanAnnouncement {
+    /// TXT properties for mDNS; the lobby port travels in the SRV record instead.
+    pub fn to_txt(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("game", self.game.clone()),
+            ("name", self.name.clone()),
+            ("lobby", self.lobby.to_string()),
+            ("code", u8::from(self.code_required).to_string()),
+        ]
+    }
+
+    /// The inverse of [`LanAnnouncement::to_txt`]; `None` if a property is missing or malformed.
+    pub fn from_txt<'a>(get: impl Fn(&str) -> Option<&'a str>, lobby_port: u16) -> Option<Self> {
+        Some(Self {
+            game: get("game")?.into(),
+            name: get("name")?.into(),
+            lobby_port,
+            lobby: get("lobby")?.parse().ok()?,
+            code_required: match get("code")? {
+                "0" => false,
+                "1" => true,
+                _ => return None,
+            },
+        })
+    }
+}
+
 /// Tests for the JSON wire format.
 #[cfg(test)]
 mod tests {
@@ -178,5 +230,26 @@ mod tests {
     fn json_shape_is_tagged() {
         let json = serde_json::to_string(&ClientMsg::SetReady { ready: true }).unwrap();
         assert_eq!(json, r#"{"type":"set_ready","ready":true}"#);
+    }
+
+    /// A LAN announcement survives the TXT encoding; broken properties are refused.
+    #[test]
+    fn lan_announcement_txt_round_trips() {
+        let ann = LanAnnouncement {
+            game: "demo/1".into(),
+            name: "Alice's game".into(),
+            lobby_port: 7878,
+            lobby: 42,
+            code_required: true,
+        };
+        let txt: BTreeMap<_, _> = ann.to_txt().into_iter().collect();
+        let get = |k: &str| txt.get(k).map(String::as_str);
+        assert_eq!(LanAnnouncement::from_txt(get, 7878), Some(ann));
+        let mut broken = txt.clone();
+        broken.insert("code", "yes".into());
+        assert_eq!(
+            LanAnnouncement::from_txt(|k| broken.get(k).map(String::as_str), 7878),
+            None
+        );
     }
 }

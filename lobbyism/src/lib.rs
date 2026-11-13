@@ -5,6 +5,8 @@
 //! The client uses `tokio-tungstenite-wasm`, so the same code runs natively
 //! (tokio) and in the browser (`wasm32-unknown-unknown`). The server depends on
 //! this crate with `default-features = false` and gets the protocol only.
+//! The `lan-broadcast` and `lan-mdns` features add [`lan`] discovery of
+//! lobbies hosted on the local network (native only).
 //!
 //! ```no_run
 //! # async fn demo(token: String) -> Result<(), lobbyism::Error> {
@@ -25,5 +27,7 @@ pub use proto::*;
 
 #[cfg(feature = "client")]
 mod client;
+#[cfg(any(feature = "lan-broadcast", feature = "lan-mdns"))]
+pub mod lan;
 #[cfg(feature = "client")]
 pub use client::{Error, LobbyClient};
