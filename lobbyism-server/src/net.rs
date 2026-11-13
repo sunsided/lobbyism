@@ -96,7 +96,8 @@ async fn connection<I: TicketIssuer>(
     // Authenticate before touching shared state.
     let hello = tokio::time::timeout(HELLO_TIMEOUT, next_msg(&mut source))
         .await
-        .map_err(|_| "hello timeout".to_string())??;
+        .map_err(|_| "hello timeout".to_string())?
+        .map_err(|e| e.to_string())?;
     let auth = match hello {
         Some(ClientMsg::Hello { token }) => validator.validate(&token),
         Some(_) => Err("first message must be hello".into()),
@@ -156,10 +157,9 @@ async fn connection<I: TicketIssuer>(
         let out = match next {
             Ok(Some(msg)) => shared.lock().unwrap().core.handle(player, msg),
             Ok(None) => break Ok(()),
-            Err(e) if e.starts_with("bad message") => {
-                vec![(player, ServerMsg::Error { message: e })]
-            }
-            Err(e) => break Err(e),
+            // A malformed message gets an error reply; the connection stays usable.
+            Err(ReadError::Bad(message)) => vec![(player, ServerMsg::Error { message })],
+            Err(ReadError::Fatal(e)) => break Err(e),
         };
         shared.lock().unwrap().deliver(out);
     };
@@ -177,8 +177,26 @@ async fn connection<I: TicketIssuer>(
     result
 }
 
+/// Why reading the next client message failed.
+#[derive(Debug)]
+enum ReadError {
+    /// The frame arrived but isn't a valid message; reply and keep the connection.
+    Bad(String),
+    /// The connection itself failed; stop serving it.
+    Fatal(String),
+}
+
+impl std::fmt::Display for ReadError {
+    /// The reason, without the kind.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadError::Bad(reason) | ReadError::Fatal(reason) => f.write_str(reason),
+        }
+    }
+}
+
 /// Next client message; `Ok(None)` on a clean close.
-async fn next_msg<S>(source: &mut S) -> Result<Option<ClientMsg>, String>
+async fn next_msg<S>(source: &mut S) -> Result<Option<ClientMsg>, ReadError>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
@@ -188,11 +206,13 @@ where
             Some(Ok(Message::Text(text))) => {
                 return serde_json::from_str(&text)
                     .map(Some)
-                    .map_err(|e| format!("bad message: {e}"));
+                    .map_err(|e| ReadError::Bad(format!("bad message: {e}")));
             }
-            Some(Ok(Message::Binary(_))) => return Err("bad message: expected text frame".into()),
+            Some(Ok(Message::Binary(_))) => {
+                return Err(ReadError::Bad("bad message: expected text frame".into()));
+            }
             Some(Ok(_)) => continue, // ping/pong are handled by tungstenite
-            Some(Err(e)) => return Err(e.to_string()),
+            Some(Err(e)) => return Err(ReadError::Fatal(e.to_string())),
         }
     }
 }
@@ -200,4 +220,91 @@ where
 /// Encodes a server message as a JSON text frame.
 fn encode(msg: &ServerMsg) -> Message {
     Message::text(serde_json::to_string(msg).expect("ServerMsg serializes"))
+}
+
+/// End-to-end tests of the WebSocket front end over real sockets.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Config, HmacValidator, MatchboxIssuer};
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    /// A WebSocket client connection as the tests use it.
+    type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+    /// Test-only HMAC secret, exactly 32 bytes.
+    const SECRET: &[u8] = b"net-test-secret-net-test-secret!";
+
+    /// Starts a server with the default config on a random local port; returns its address.
+    async fn start() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let core = Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap());
+        tokio::spawn(serve(listener, core, HmacValidator::new(SECRET).unwrap()));
+        addr
+    }
+
+    /// Opens a WebSocket connection without authenticating.
+    async fn connect(addr: &str) -> Client {
+        tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .unwrap()
+            .0
+    }
+
+    /// Opens a connection and authenticates as `player`.
+    async fn login(addr: &str, player: PlayerId) -> Client {
+        let mut ws = connect(addr).await;
+        let token = HmacValidator::new(SECRET)
+            .unwrap()
+            .sign(player, u64::MAX / 2);
+        send(&mut ws, &ClientMsg::Hello { token }).await;
+        assert_eq!(recv(&mut ws).await, ServerMsg::Welcome { player });
+        ws
+    }
+
+    /// Sends one client message.
+    async fn send(ws: &mut Client, msg: &ClientMsg) {
+        ws.send(Message::text(serde_json::to_string(msg).unwrap()))
+            .await
+            .unwrap();
+    }
+
+    /// The next server message, failing the test after 5 seconds.
+    async fn recv(ws: &mut Client) -> ServerMsg {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("server message within 5 s")
+                .expect("connection open")
+                .unwrap();
+            if let Message::Text(text) = frame {
+                return serde_json::from_str(&text).unwrap();
+            }
+        }
+    }
+
+    /// Sends a duel queue request for the `eu` region.
+    async fn enqueue(ws: &mut Client) {
+        let msg = ClientMsg::Enqueue {
+            mode: "duel".into(),
+            region: "eu".into(),
+            skill: 100,
+        };
+        send(ws, &msg).await;
+    }
+
+    /// A frame that isn't a valid message gets an error reply, and the
+    /// connection keeps working afterwards.
+    #[tokio::test]
+    async fn malformed_message_gets_error_and_connection_survives() {
+        let addr = start().await;
+        let mut ws = login(&addr, 1).await;
+
+        ws.send(Message::text("not json")).await.unwrap();
+        assert!(matches!(recv(&mut ws).await, ServerMsg::Error { .. }));
+
+        enqueue(&mut ws).await;
+        assert!(matches!(recv(&mut ws).await, ServerMsg::Queued { .. }));
+    }
 }
