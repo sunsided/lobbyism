@@ -11,6 +11,10 @@ compile_error!("the lan-broadcast and lan-mdns features need UDP sockets, which 
 use crate::proto::LanAnnouncement;
 use std::net::{IpAddr, SocketAddr};
 
+/// Most hosts one search returns. Any peer can announce, so without a cap a
+/// flood of made-up lobbies would grow the result (and its dedupe) without bound.
+const MAX_HOSTS: usize = 64;
+
 /// A lobby found on the local network.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LanHost {
@@ -47,7 +51,7 @@ mod broadcast {
     /// Listens on UDP `port` for `wait` and returns the distinct hosts of `game` it heard.
     ///
     /// Hosts announce once a second, so a `wait` of 2 to 3 seconds finds
-    /// everyone who is reachable. The port is shared with other listeners on
+    /// everyone who is reachable. Stops early after 64 hosts. The port is shared with other listeners on
     /// the same machine, so several game instances can search at once.
     pub async fn discover_broadcast(
         port: u16,
@@ -61,7 +65,11 @@ mod broadcast {
         let mut hosts = Vec::new();
         while let Ok(received) = tokio::time::timeout_at(deadline, socket.recv_from(&mut buf)).await
         {
-            let (n, from) = received?;
+            // Skip a datagram that failed to arrive rather than losing the search:
+            // Windows reports an oversized one as an error (WSAEMSGSIZE), not truncated.
+            let Ok((n, from)) = received else {
+                continue;
+            };
             if n > LAN_MAX_ANNOUNCEMENT_BYTES {
                 continue;
             }
@@ -74,6 +82,9 @@ mod broadcast {
             };
             if host.announcement.game == game && !hosts.contains(&host) {
                 hosts.push(host);
+                if hosts.len() == super::MAX_HOSTS {
+                    break;
+                }
             }
         }
         Ok(hosts)
@@ -101,13 +112,15 @@ mod mdns {
     use super::LanHost;
     use crate::proto::{LAN_MDNS_SERVICE, LanAnnouncement};
     use mdns_sd::{ServiceDaemon, ServiceEvent};
+    use std::net::IpAddr;
     use std::time::{Duration, Instant};
 
     /// Browses for `wait` and returns the distinct hosts of `game` that resolved.
     ///
     /// Blocks the calling thread; from async code, run it in
-    /// `tokio::task::spawn_blocking`. IPv6 link-local addresses are skipped,
-    /// since a URL can't carry their interface.
+    /// `tokio::task::spawn_blocking`. Stops early after 64 hosts. Addresses a
+    /// joiner can't or shouldn't connect to are skipped: loopback,
+    /// unspecified, multicast, broadcast and IPv6 link-local.
     pub fn discover_mdns(game: &str, wait: Duration) -> Result<Vec<LanHost>, String> {
         let daemon = ServiceDaemon::new().map_err(|e| format!("mDNS: {e}"))?;
         let events = daemon
@@ -131,15 +144,31 @@ mod mdns {
                     addr: ip.to_ip_addr(),
                     announcement: announcement.clone(),
                 };
-                let link_local_v6 =
-                    matches!(host.addr, std::net::IpAddr::V6(v6) if v6.is_unicast_link_local());
-                if !link_local_v6 && !hosts.contains(&host) {
+                if connectable(host.addr) && !hosts.contains(&host) {
                     hosts.push(host);
                 }
+            }
+            if hosts.len() >= super::MAX_HOSTS {
+                hosts.truncate(super::MAX_HOSTS);
+                break;
             }
         }
         let _ = daemon.shutdown();
         Ok(hosts)
+    }
+
+    /// Whether an address from an mDNS answer is worth connecting to: a unicast
+    /// address of another machine. The responder picks these addresses, and the
+    /// joiner sends its token (maybe a join code) wherever they point, so
+    /// loopback, unspecified, multicast and broadcast are refused, as is IPv6
+    /// link-local, which a URL can't scope to an interface.
+    pub(super) fn connectable(ip: IpAddr) -> bool {
+        let special = ip.is_unspecified() || ip.is_loopback() || ip.is_multicast();
+        !special
+            && match ip {
+                IpAddr::V4(v4) => !v4.is_broadcast(),
+                IpAddr::V6(v6) => !v6.is_unicast_link_local(),
+            }
     }
 }
 
@@ -163,6 +192,28 @@ mod tests {
         };
         assert_eq!(host("192.168.1.2").url(), "ws://192.168.1.2:7878");
         assert_eq!(host("fd00::2").url(), "ws://[fd00::2]:7878");
+    }
+
+    /// Only addresses of other machines that a URL can reach count as mDNS hosts.
+    #[cfg(feature = "lan-mdns")]
+    #[test]
+    fn mdns_addresses_are_filtered() {
+        use mdns::connectable;
+        for ok in ["192.168.1.20", "10.0.0.5", "fd00::2", "2001:db8::1"] {
+            assert!(connectable(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in [
+            "127.0.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.251",
+            "::1",
+            "::",
+            "ff02::fb",
+            "fe80::1",
+        ] {
+            assert!(!connectable(bad.parse().unwrap()), "{bad}");
+        }
     }
 
     /// Announcements of the right game are found once each; others and garbage are ignored.
