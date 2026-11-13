@@ -23,7 +23,8 @@ pub fn lan_addresses(port: u16) -> std::io::Result<Vec<SocketAddr>> {
         .filter(|i| i.is_oper_up() && !i.is_loopback() && !i.is_link_local())
         .map(|i| i.ip())
         .collect();
-    ips.sort_by_key(IpAddr::is_ipv6);
+    // `IpAddr`'s order puts IPv4 first; sorting also makes duplicates adjacent for `dedup`.
+    ips.sort();
     ips.dedup();
     ips.truncate(MAX_TOKEN_ADDRESSES);
     Ok(ips
@@ -97,6 +98,7 @@ mod broadcast {
             .chain([Ipv4Addr::BROADCAST])
             .map(|ip| SocketAddr::from((ip, port)))
             .collect();
+        targets.sort();
         targets.dedup();
         targets
     }
@@ -172,6 +174,10 @@ mod tests {
     fn lan_addresses_are_reachable_kinds() {
         let addrs = lan_addresses(5000).unwrap();
         assert!(addrs.len() <= MAX_TOKEN_ADDRESSES);
+        let mut unique = addrs.clone();
+        unique.dedup();
+        assert_eq!(unique, addrs, "duplicate addresses");
+        assert!(addrs.is_sorted_by_key(|a| a.is_ipv6()), "IPv6 before IPv4");
         for a in addrs {
             assert_eq!(a.port(), 5000);
             assert!(!a.ip().is_loopback(), "{a}");
