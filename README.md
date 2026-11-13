@@ -289,7 +289,7 @@ task check    # fmt, clippy, the client on wasm32, the server without default fe
 task ci       # check, test, then a short fuzz run
 ```
 
-The property tests throw random message sequences from several players at the state machine and check its internal bookkeeping after every step, and do the same with mutated login tokens. The fuzz targets in `fuzz/` (cargo-fuzz, nightly) cover incoming WebSocket frames, incoming tokens and the state machine again; `task fuzz:smoke` runs each briefly, `task fuzz:run TARGET=core_ops` for as long as you like.
+The property tests throw random message sequences from several players at the state machine and check its internal bookkeeping after every step, and do the same with mutated login tokens. The fuzz targets in `fuzz/` (cargo-fuzz, nightly) cover incoming WebSocket frames, incoming tokens and the state machine again; `task fuzz:smoke` runs each briefly, `task fuzz:run TARGET=core_ops` for as long as you like. [loom](https://github.com/tokio-rs/loom) models in `lobbyism-server/src/net.rs` run two connections' calls into the shared server state in every possible interleaving, e.g. to check that concurrent lobby changes never leave members on a stale snapshot; they are part of `task test`.
 
 GitHub Actions runs the same checks on every push to `main` and every pull request, plus the renet example, a 30-second fuzz run per target, and [actionlint](https://github.com/rhysd/actionlint) and [zizmor](https://github.com/zizmorcore/zizmor) on the workflows themselves (`task lint:actions` does the latter locally).
 

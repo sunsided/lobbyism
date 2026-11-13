@@ -523,3 +523,154 @@ mod tests {
         panic!("the non-reading member was never removed");
     }
 }
+
+/// Loom models of the session bookkeeping. Connection tasks touch [`Shared`]
+/// only through single method calls under the lock; these models check every
+/// interleaving of two such calls. (Sockets and timers are out of loom's reach,
+/// so they stay with the end-to-end tests above.)
+#[cfg(test)]
+mod loom_model {
+    use super::*;
+    use crate::{Config, MatchboxIssuer};
+    use lobbyism::proto::{LobbyInfo, Metadata};
+    use loom::sync::{Arc, Mutex};
+    use loom::thread;
+
+    /// A fresh server state with no sessions.
+    fn shared() -> Shared<MatchboxIssuer> {
+        Shared {
+            core: Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap()),
+            sessions: HashMap::new(),
+        }
+    }
+
+    /// Registers `player` on connection `conn` with an outbox of `capacity`.
+    fn session(
+        s: &mut Shared<MatchboxIssuer>,
+        player: PlayerId,
+        conn: u64,
+        capacity: usize,
+    ) -> mpsc::Receiver<ServerMsg> {
+        let (tx, rx) = mpsc::channel(capacity);
+        assert!(s.register(player, conn, tx));
+        rx
+    }
+
+    /// Drains `rx` and returns the last lobby snapshot in it.
+    fn last_lobby(rx: &mut mpsc::Receiver<ServerMsg>) -> Option<LobbyInfo> {
+        let mut last = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let ServerMsg::Lobby(info) = msg {
+                last = Some(info);
+            }
+        }
+        last
+    }
+
+    /// Two members changing their lobby at once both end up with a snapshot
+    /// that has both changes, whichever order the changes land in.
+    #[test]
+    fn concurrent_lobby_changes_end_on_the_latest_snapshot() {
+        loom::model(|| {
+            let mut s = shared();
+            let mut host = session(&mut s, 1, 1, OUTBOX_CAPACITY);
+            let mut guest = session(&mut s, 2, 2, OUTBOX_CAPACITY);
+            s.handle(
+                1,
+                ClientMsg::CreateLobby {
+                    max_players: 2,
+                    metadata: Metadata::new(),
+                },
+            );
+            let lobby = last_lobby(&mut host).unwrap().id;
+            s.handle(2, ClientMsg::JoinLobby { lobby });
+
+            let s = Arc::new(Mutex::new(s));
+            let set_map = thread::spawn({
+                let s = s.clone();
+                move || {
+                    let metadata = Metadata::from([("map".into(), "dust".into())]);
+                    s.lock()
+                        .unwrap()
+                        .handle(1, ClientMsg::SetMetadata { metadata });
+                }
+            });
+            let set_ready = thread::spawn({
+                let s = s.clone();
+                move || {
+                    s.lock()
+                        .unwrap()
+                        .handle(2, ClientMsg::SetReady { ready: true })
+                }
+            });
+            set_map.join().unwrap();
+            set_ready.join().unwrap();
+
+            for rx in [&mut host, &mut guest] {
+                let info = last_lobby(rx).unwrap();
+                assert_eq!(info.metadata.get("map").map(String::as_str), Some("dust"));
+                assert!(info.members.iter().all(|m| m.ready || m.player == 1));
+            }
+        });
+    }
+
+    /// A dropped connection that is still winding down never removes the
+    /// session of a newer connection for the same player.
+    #[test]
+    fn ending_connection_never_removes_a_newer_one() {
+        loom::model(|| {
+            let mut s = shared();
+            // Room for the Welcome only: the lobby snapshot overflows the outbox,
+            // so deliver() drops the session as too slow, like a stalled client.
+            let _old = session(&mut s, 1, 1, 1);
+            s.handle(
+                1,
+                ClientMsg::CreateLobby {
+                    max_players: 2,
+                    metadata: Metadata::new(),
+                },
+            );
+            assert!(!s.sessions.contains_key(&1), "slow session not dropped");
+
+            let s = Arc::new(Mutex::new(s));
+            let ending = thread::spawn({
+                let s = s.clone();
+                move || s.lock().unwrap().unregister(1, 1)
+            });
+            let (tx, _newer_rx) = mpsc::channel(OUTBOX_CAPACITY);
+            let newer = thread::spawn({
+                let s = s.clone();
+                move || s.lock().unwrap().register(1, 2, tx)
+            });
+            ending.join().unwrap();
+            assert!(newer.join().unwrap(), "the slot was free");
+
+            let s = s.lock().unwrap();
+            assert_eq!(s.sessions.get(&1).map(|(conn, _)| *conn), Some(2));
+            s.core.check_invariants();
+        });
+    }
+
+    /// Two connections of one player racing to register: exactly one wins.
+    #[test]
+    fn one_session_per_player() {
+        loom::model(|| {
+            let s = Arc::new(Mutex::new(shared()));
+            let racers: Vec<_> = (1..=2)
+                .map(|conn| {
+                    let s = s.clone();
+                    thread::spawn(move || {
+                        let (tx, _rx) = mpsc::channel(OUTBOX_CAPACITY);
+                        s.lock().unwrap().register(7, conn, tx)
+                    })
+                })
+                .collect();
+            let wins = racers
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .filter(|won| *won)
+                .count();
+            assert_eq!(wins, 1);
+        });
+    }
+}
