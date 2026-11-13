@@ -291,6 +291,7 @@ fn encode(msg: &ServerMsg) -> Message {
 mod tests {
     use super::*;
     use crate::{Config, HmacValidator, MatchboxIssuer};
+    use lobbyism::proto::Metadata;
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
     /// A WebSocket client connection as the tests use it.
@@ -307,13 +308,19 @@ mod tests {
         send: Duration::from_millis(300),
     };
 
-    /// Starts a server with the default config on a random local port; returns its address.
+    /// Starts a server with the default config and [`TEST_TIMEOUTS`] on a random
+    /// local port; returns its address.
     async fn start() -> String {
+        start_with(TEST_TIMEOUTS).await
+    }
+
+    /// Like [`start`], with explicit time limits.
+    async fn start_with(timeouts: Timeouts) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let core = Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap());
         let validator = HmacValidator::new(SECRET).unwrap();
-        tokio::spawn(serve_with(listener, core, validator, TEST_TIMEOUTS));
+        tokio::spawn(serve_with(listener, core, validator, timeouts));
         addr
     }
 
@@ -445,5 +452,55 @@ mod tests {
         assert_eq!(try_recv(&mut ws, Duration::from_secs(1)).await, None);
         send(&mut ws, &ClientMsg::CancelQueue).await;
         assert_eq!(recv(&mut ws).await, ServerMsg::Dequeued);
+    }
+
+    /// A lobby member that is connected but never reads is removed once the
+    /// server can't get frames to it, even with a long idle timeout: the full
+    /// outbox drops the session and the blocked writer gives up at the send timeout.
+    #[tokio::test]
+    async fn client_that_stops_reading_is_removed() {
+        let addr = start_with(Timeouts {
+            idle: Duration::from_secs(60),
+            ..TEST_TIMEOUTS
+        })
+        .await;
+        let mut host = login(&addr, 1).await;
+        let create = ClientMsg::CreateLobby {
+            max_players: 2,
+            metadata: Default::default(),
+        };
+        send(&mut host, &create).await;
+        let ServerMsg::Lobby(lobby) = recv(&mut host).await else {
+            panic!("lobby expected")
+        };
+        let mut reader = login(&addr, 2).await;
+        send(&mut reader, &ClientMsg::JoinLobby { lobby: lobby.id }).await;
+        assert!(matches!(recv(&mut reader).await, ServerMsg::Lobby(_)));
+        // From here on `reader` is never polled; every metadata change below is
+        // broadcast to it and piles up in its socket and outbox.
+
+        let big = Metadata::from([("k".to_string(), "v".repeat(4000))]);
+        for _ in 0..2000 {
+            let update = ClientMsg::SetMetadata {
+                metadata: big.clone(),
+            };
+            send(&mut host, &update).await;
+            let ServerMsg::Lobby(state) = recv(&mut host).await else {
+                panic!("lobby update expected")
+            };
+            if state.members.len() == 1 {
+                drop(reader);
+                return;
+            }
+        }
+        // The removal can land after the flood: the blocked writer first has to
+        // hit its send timeout.
+        while let Some(msg) = try_recv(&mut host, Duration::from_secs(5)).await {
+            if matches!(&msg, ServerMsg::Lobby(state) if state.members.len() == 1) {
+                drop(reader);
+                return;
+            }
+        }
+        panic!("the non-reading member was never removed");
     }
 }
