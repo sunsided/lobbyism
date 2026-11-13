@@ -50,6 +50,51 @@ struct Shared<I> {
     sessions: HashMap<PlayerId, (u64, mpsc::Sender<ServerMsg>)>,
 }
 
+impl<I: TicketIssuer> Shared<I> {
+    /// Registers connection `conn` as `player`'s session; refuses (`false`)
+    /// while the player has another session.
+    fn register(&mut self, player: PlayerId, conn: u64, tx: mpsc::Sender<ServerMsg>) -> bool {
+        if self.sessions.contains_key(&player) {
+            return false;
+        }
+        self.sessions.insert(player, (conn, tx));
+        true
+    }
+
+    /// Applies one message from connection `conn` of `player` and queues the
+    /// replies; `Err` is a malformed message, answered with that error.
+    ///
+    /// Returns `false`, ignoring the message, once `conn` is no longer the
+    /// player's session (dropped as too slow, maybe already replaced by a
+    /// reconnect): the player's lobby and queue state belong to the live session.
+    ///
+    /// Handling and delivery happen under the same lock on purpose: with the
+    /// lock released in between, two lobby members acting at once could queue
+    /// their snapshots in the opposite order and both end up showing the older one.
+    fn handle(&mut self, player: PlayerId, conn: u64, msg: Result<ClientMsg, String>) -> bool {
+        if self.sessions.get(&player).map(|(c, _)| *c) != Some(conn) {
+            return false;
+        }
+        let out = match msg {
+            Ok(msg) => self.core.handle(player, msg),
+            Err(message) => vec![(player, ServerMsg::Error { message })],
+        };
+        self.deliver(out);
+        true
+    }
+
+    /// Ends connection `conn` of `player`: removes the session and the player's
+    /// lobby and queue state, unless a newer connection has taken over since.
+    fn unregister(&mut self, player: PlayerId, conn: u64) {
+        let superseded = self.sessions.get(&player).is_some_and(|(c, _)| *c != conn);
+        if !superseded {
+            self.sessions.remove(&player);
+            let out = self.core.disconnect(player);
+            self.deliver(out);
+        }
+    }
+}
+
 impl<I> Shared<I> {
     /// Queues each message for its recipient; recipients that are gone or too
     /// slow to keep up lose their session.
@@ -167,17 +212,10 @@ async fn connection<I: TicketIssuer>(
     static NEXT_CONN: AtomicU64 = AtomicU64::new(0);
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = mpsc::channel(OUTBOX_CAPACITY);
-    let registered = {
-        let mut s = shared.lock().unwrap();
-        let free = !s.sessions.contains_key(&player);
-        if free {
-            tx.try_send(ServerMsg::Welcome { player })
-                .expect("fresh channel has room");
-            s.sessions.insert(player, (conn, tx));
-        }
-        free
-    };
-    if !registered {
+    // Queued before taking the lock, so even a failure here can't poison it.
+    tx.try_send(ServerMsg::Welcome { player })
+        .expect("fresh channel has room");
+    if !shared.lock().unwrap().register(player, conn, tx) {
         let message = "player already connected".to_string();
         let _ = sink
             .send(encode(&ServerMsg::Error {
@@ -214,25 +252,19 @@ async fn connection<I: TicketIssuer>(
             // Writer stopped: socket broken, peer not reading, or session dropped as too slow.
             _ = &mut writer => break Err("writer closed".into()),
         };
-        let out = match next {
-            Ok(Some(msg)) => shared.lock().unwrap().core.handle(player, msg),
+        let msg = match next {
+            Ok(Some(msg)) => Ok(msg),
             Ok(None) => break Ok(()),
             // A malformed message gets an error reply; the connection stays usable.
-            Err(ReadError::Bad(message)) => vec![(player, ServerMsg::Error { message })],
+            Err(ReadError::Bad(message)) => Err(message),
             Err(ReadError::Fatal(e)) => break Err(e),
         };
-        shared.lock().unwrap().deliver(out);
+        if !shared.lock().unwrap().handle(player, conn, msg) {
+            break Err("session dropped".into());
+        }
     };
 
-    {
-        let mut s = shared.lock().unwrap();
-        let superseded = s.sessions.get(&player).is_some_and(|(c, _)| *c != conn);
-        if !superseded {
-            s.sessions.remove(&player);
-            let out = s.core.disconnect(player);
-            s.deliver(out);
-        }
-    }
+    shared.lock().unwrap().unregister(player, conn);
     writer.abort();
     result
 }
@@ -502,5 +534,199 @@ mod tests {
             }
         }
         panic!("the non-reading member was never removed");
+    }
+}
+
+/// Loom models of the session bookkeeping. Connection tasks touch [`Shared`]
+/// only through single method calls under the lock; these models check every
+/// interleaving of two such calls. (Sockets and timers are out of loom's reach,
+/// so they stay with the end-to-end tests above.)
+#[cfg(test)]
+mod loom_model {
+    use super::*;
+    use crate::{Config, MatchboxIssuer};
+    use lobbyism::proto::{LobbyInfo, Metadata};
+    use loom::sync::{Arc, Mutex};
+    use loom::thread;
+
+    /// A fresh server state with no sessions.
+    fn shared() -> Shared<MatchboxIssuer> {
+        Shared {
+            core: Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap()),
+            sessions: HashMap::new(),
+        }
+    }
+
+    /// Registers `player` on connection `conn` with an outbox of `capacity`.
+    fn session(
+        s: &mut Shared<MatchboxIssuer>,
+        player: PlayerId,
+        conn: u64,
+        capacity: usize,
+    ) -> mpsc::Receiver<ServerMsg> {
+        let (tx, rx) = mpsc::channel(capacity);
+        tx.try_send(ServerMsg::Welcome { player }).unwrap();
+        assert!(s.register(player, conn, tx));
+        rx
+    }
+
+    /// Drains `rx` and returns the last lobby snapshot in it.
+    fn last_lobby(rx: &mut mpsc::Receiver<ServerMsg>) -> Option<LobbyInfo> {
+        let mut last = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let ServerMsg::Lobby(info) = msg {
+                last = Some(info);
+            }
+        }
+        last
+    }
+
+    /// Two members changing their lobby at once both end up with a snapshot
+    /// that has both changes, whichever order the changes land in.
+    #[test]
+    fn concurrent_lobby_changes_end_on_the_latest_snapshot() {
+        loom::model(|| {
+            let mut s = shared();
+            let mut host = session(&mut s, 1, 1, OUTBOX_CAPACITY);
+            let mut guest = session(&mut s, 2, 2, OUTBOX_CAPACITY);
+            s.handle(
+                1,
+                1,
+                Ok(ClientMsg::CreateLobby {
+                    max_players: 2,
+                    metadata: Metadata::new(),
+                }),
+            );
+            let lobby = last_lobby(&mut host).unwrap().id;
+            s.handle(2, 2, Ok(ClientMsg::JoinLobby { lobby }));
+
+            let s = Arc::new(Mutex::new(s));
+            let set_map = thread::spawn({
+                let s = s.clone();
+                move || {
+                    let metadata = Metadata::from([("map".into(), "dust".into())]);
+                    s.lock()
+                        .unwrap()
+                        .handle(1, 1, Ok(ClientMsg::SetMetadata { metadata }));
+                }
+            });
+            let set_ready = thread::spawn({
+                let s = s.clone();
+                move || {
+                    s.lock()
+                        .unwrap()
+                        .handle(2, 2, Ok(ClientMsg::SetReady { ready: true }))
+                }
+            });
+            set_map.join().unwrap();
+            set_ready.join().unwrap();
+
+            for rx in [&mut host, &mut guest] {
+                let info = last_lobby(rx).unwrap();
+                assert_eq!(info.metadata.get("map").map(String::as_str), Some("dust"));
+                assert!(info.members.iter().all(|m| m.ready || m.player == 1));
+            }
+        });
+    }
+
+    /// A dropped connection that is still winding down never removes the
+    /// session of a newer connection for the same player.
+    #[test]
+    fn ending_connection_never_removes_a_newer_one() {
+        loom::model(|| {
+            let mut s = shared();
+            // Room for the Welcome only: the lobby snapshot overflows the outbox,
+            // so deliver() drops the session as too slow, like a stalled client.
+            let _old = session(&mut s, 1, 1, 1);
+            s.handle(
+                1,
+                1,
+                Ok(ClientMsg::CreateLobby {
+                    max_players: 2,
+                    metadata: Metadata::new(),
+                }),
+            );
+            assert!(!s.sessions.contains_key(&1), "slow session not dropped");
+
+            let s = Arc::new(Mutex::new(s));
+            let ending = thread::spawn({
+                let s = s.clone();
+                move || s.lock().unwrap().unregister(1, 1)
+            });
+            let (tx, _newer_rx) = mpsc::channel(OUTBOX_CAPACITY);
+            let newer = thread::spawn({
+                let s = s.clone();
+                move || s.lock().unwrap().register(1, 2, tx)
+            });
+            ending.join().unwrap();
+            assert!(newer.join().unwrap(), "the slot was free");
+
+            let s = s.lock().unwrap();
+            assert_eq!(s.sessions.get(&1).map(|(conn, _)| *conn), Some(2));
+            s.core.check_invariants();
+        });
+    }
+
+    /// Messages still arriving on a connection that was dropped as too slow are
+    /// ignored, whether or not the player has reconnected by then, so they
+    /// can't act on the new session's lobby.
+    #[test]
+    fn dropped_connection_cannot_act_for_a_reconnect() {
+        loom::model(|| {
+            let mut s = shared();
+            let _old = session(&mut s, 1, 1, 1);
+            s.handle(
+                1,
+                1,
+                Ok(ClientMsg::CreateLobby {
+                    max_players: 2,
+                    metadata: Metadata::new(),
+                }),
+            );
+            assert!(!s.sessions.contains_key(&1), "slow session not dropped");
+
+            let s = Arc::new(Mutex::new(s));
+            let stale = thread::spawn({
+                let s = s.clone();
+                move || s.lock().unwrap().handle(1, 1, Ok(ClientMsg::LeaveLobby))
+            });
+            let (tx, mut newer_rx) = mpsc::channel(OUTBOX_CAPACITY);
+            let newer = thread::spawn({
+                let s = s.clone();
+                move || s.lock().unwrap().register(1, 2, tx)
+            });
+            assert!(!stale.join().unwrap(), "stale message was handled");
+            assert!(newer.join().unwrap());
+
+            let s = s.lock().unwrap();
+            assert_eq!(s.core.lobby_ids().len(), 1, "stale LeaveLobby applied");
+            assert!(
+                newer_rx.try_recv().is_err(),
+                "stale reply reached the new session"
+            );
+        });
+    }
+
+    /// Two connections of one player racing to register: exactly one wins.
+    #[test]
+    fn one_session_per_player() {
+        loom::model(|| {
+            let s = Arc::new(Mutex::new(shared()));
+            let racers: Vec<_> = (1..=2)
+                .map(|conn| {
+                    let s = s.clone();
+                    thread::spawn(move || {
+                        let (tx, _rx) = mpsc::channel(OUTBOX_CAPACITY);
+                        s.lock().unwrap().register(7, conn, tx)
+                    })
+                })
+                .collect();
+            let wins = racers
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .filter(|won| *won)
+                .count();
+            assert_eq!(wins, 1);
+        });
     }
 }
