@@ -1,5 +1,12 @@
 # lobbyism
 
+[![lobbyism on crates.io](https://img.shields.io/crates/v/lobbyism.svg?label=lobbyism)](https://crates.io/crates/lobbyism)
+[![lobbyism-server on crates.io](https://img.shields.io/crates/v/lobbyism-server.svg?label=lobbyism-server)](https://crates.io/crates/lobbyism-server)
+[![docs: lobbyism](https://img.shields.io/docsrs/lobbyism?label=docs%3A%20lobbyism)](https://docs.rs/lobbyism)
+[![docs: lobbyism-server](https://img.shields.io/docsrs/lobbyism-server?label=docs%3A%20lobbyism-server)](https://docs.rs/lobbyism-server)
+[![CI](https://github.com/sunsided/lobbyism/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/lobbyism/actions/workflows/ci.yml)
+[![License: EUPL-1.2](https://img.shields.io/crates/l/lobbyism.svg)](LICENSE)
+
 Lobbies and matchmaking for Rust games: players find each other here, then connect with whatever transport the game already uses.
 
 Rust has good transports (renet, quinn, matchbox, ggrs), but not so much on getting players together before they connect: there is no counterpart to Steam lobbies or a small master server you can embed. lobbyism is an attempt at that missing piece, and it deliberately stops where the existing crates start: when a match is formed, every player gets a connection ticket for the transport (a renet `ConnectToken`, or a matchbox room), and the lobby never sees a single gameplay packet.

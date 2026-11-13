@@ -1,5 +1,10 @@
 # lobbyism-server
 
+[![crates.io](https://img.shields.io/crates/v/lobbyism-server.svg)](https://crates.io/crates/lobbyism-server)
+[![docs.rs](https://docs.rs/lobbyism-server/badge.svg)](https://docs.rs/lobbyism-server)
+[![CI](https://github.com/sunsided/lobbyism/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/lobbyism/actions/workflows/ci.yml)
+[![License: EUPL-1.2](https://img.shields.io/crates/l/lobbyism-server.svg)](https://interoperable-europe.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
+
 The lobby and matchmaking server for [`lobbyism`](https://crates.io/crates/lobbyism): a WebSocket service where players meet in lobbies or queue by mode, region and skill bucket, and get a connection ticket for the game's own transport when a match forms. It ships as a binary and as a library to embed.
 
 ## Running the binary

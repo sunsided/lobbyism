@@ -1,5 +1,10 @@
 # lobbyism
 
+[![crates.io](https://img.shields.io/crates/v/lobbyism.svg)](https://crates.io/crates/lobbyism)
+[![docs.rs](https://docs.rs/lobbyism/badge.svg)](https://docs.rs/lobbyism)
+[![CI](https://github.com/sunsided/lobbyism/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/lobbyism/actions/workflows/ci.yml)
+[![License: EUPL-1.2](https://img.shields.io/crates/l/lobbyism.svg)](https://interoperable-europe.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
+
 Lobbies and matchmaking for Rust games: this crate is the wire protocol and the async client; players find each other through a [`lobbyism-server`](https://crates.io/crates/lobbyism-server), then connect with the transport the game already uses.
 
 The client authenticates with a token from your own login backend, joins a lobby or a matchmaking queue, and receives a connection ticket when a match forms: a renet / netcode.io `ConnectToken` for a dedicated game server, or a matchbox room URL for peer-to-peer play (the player list doubles as the GGRS peer list). The lobby never carries gameplay traffic. The client runs on tokio and in the browser (`wasm32-unknown-unknown`), as it's built on `tokio-tungstenite-wasm`.
