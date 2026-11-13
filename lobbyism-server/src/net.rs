@@ -51,14 +51,12 @@ struct Shared<I> {
 }
 
 impl<I: TicketIssuer> Shared<I> {
-    /// Registers connection `conn` as `player`'s session and queues its
-    /// `Welcome`; refuses (`false`) while the player has another session.
+    /// Registers connection `conn` as `player`'s session; refuses (`false`)
+    /// while the player has another session.
     fn register(&mut self, player: PlayerId, conn: u64, tx: mpsc::Sender<ServerMsg>) -> bool {
         if self.sessions.contains_key(&player) {
             return false;
         }
-        tx.try_send(ServerMsg::Welcome { player })
-            .expect("fresh channel has room");
         self.sessions.insert(player, (conn, tx));
         true
     }
@@ -202,6 +200,9 @@ async fn connection<I: TicketIssuer>(
     static NEXT_CONN: AtomicU64 = AtomicU64::new(0);
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = mpsc::channel(OUTBOX_CAPACITY);
+    // Queued before taking the lock, so even a failure here can't poison it.
+    tx.try_send(ServerMsg::Welcome { player })
+        .expect("fresh channel has room");
     if !shared.lock().unwrap().register(player, conn, tx) {
         let message = "player already connected".to_string();
         let _ = sink
@@ -552,6 +553,7 @@ mod loom_model {
         capacity: usize,
     ) -> mpsc::Receiver<ServerMsg> {
         let (tx, rx) = mpsc::channel(capacity);
+        tx.try_send(ServerMsg::Welcome { player }).unwrap();
         assert!(s.register(player, conn, tx));
         rx
     }
