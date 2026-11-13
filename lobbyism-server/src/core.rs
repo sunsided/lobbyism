@@ -745,7 +745,6 @@ mod tests {
         )));
     }
 
-    /// Cancelling and disconnecting both take a player out of the queue.
     /// Lobby ids can't be guessed from each other: two lobbies created one
     /// after the other don't get neighbouring ids.
     #[test]
@@ -775,6 +774,7 @@ mod tests {
         }
     }
 
+    /// Cancelling and disconnecting both take a player out of the queue.
     #[test]
     fn cancel_and_disconnect_remove_from_queue() {
         let mut c = core();
