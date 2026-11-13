@@ -112,11 +112,15 @@ pub use mdns::{MdnsAnnouncer, announce_mdns};
 mod mdns {
     use lobbyism::proto::{LAN_MDNS_SERVICE, LanAnnouncement};
     use mdns_sd::{ServiceDaemon, ServiceInfo};
+    use std::time::Duration;
 
     /// Longest TXT property value DNS-SD allows (one length byte, key included).
     const MAX_TXT_BYTES: usize = 255;
+    /// How long dropping an [`MdnsAnnouncer`] waits for its goodbye to go out.
+    const GOODBYE_WAIT: Duration = Duration::from_secs(1);
 
     /// A registered mDNS service; dropping it withdraws the announcement.
+    #[must_use = "the announcement is withdrawn as soon as this is dropped"]
     pub struct MdnsAnnouncer {
         /// The responder thread that answers queries.
         daemon: ServiceDaemon,
@@ -126,8 +130,14 @@ mod mdns {
 
     impl Drop for MdnsAnnouncer {
         /// Sends the goodbye packet and stops the responder.
+        ///
+        /// Waits up to a second for the responder to confirm the goodbye, so
+        /// browsers drop the lobby right away instead of when its record
+        /// expires; past that, the goodbye is best-effort.
         fn drop(&mut self) {
-            let _ = self.daemon.unregister(&self.fullname);
+            if let Ok(status) = self.daemon.unregister(&self.fullname) {
+                let _ = status.recv_timeout(GOODBYE_WAIT);
+            }
             let _ = self.daemon.shutdown();
         }
     }
@@ -136,7 +146,11 @@ mod mdns {
     ///
     /// The announcement stays up until the returned [`MdnsAnnouncer`] is
     /// dropped; register a new one when it changes. Fails if the mDNS
-    /// responder cannot start or a TXT value (e.g. the name) is too long.
+    /// responder cannot start, rejects the service, or a TXT value (e.g. the
+    /// name) is too long. Sending the announcements happens afterwards on the
+    /// responder's thread, so network errors there aren't reported here. The
+    /// instance name comes from the random lobby id, so two hosts don't clash
+    /// over it in practice (mdns-sd would rename one if they did).
     pub fn announce_mdns(announcement: &LanAnnouncement) -> Result<MdnsAnnouncer, String> {
         let txt = announcement.to_txt();
         if txt
