@@ -20,7 +20,8 @@ enum Op {
     },
     /// `JoinLobby`.
     Join {
-        /// Mapped to `0..8`; includes ids that never existed.
+        /// Index into the open lobbies, mapped to `0..8`; past the end means an
+        /// id that doesn't exist.
         lobby: u8,
     },
     /// `LeaveLobby`.
@@ -71,8 +72,14 @@ fuzz_target!(|steps: Vec<(u8, Op)>| {
                 max_players: u32::from(max_players % 6),
                 metadata: meta(meta_len),
             },
+            // Ids are random, so join the k-th open lobby; k past the end stands
+            // for an id that doesn't exist.
             Op::Join { lobby } => ClientMsg::JoinLobby {
-                lobby: u64::from(lobby % 8),
+                lobby: core
+                    .lobby_ids()
+                    .get(usize::from(lobby % 8))
+                    .copied()
+                    .unwrap_or(0),
             },
             Op::Leave => ClientMsg::LeaveLobby,
             Op::SetMetadata { meta_len } => ClientMsg::SetMetadata {

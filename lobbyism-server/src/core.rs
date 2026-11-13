@@ -75,8 +75,6 @@ pub struct Core<I> {
     issuer: I,
     /// Optional callback for host changes.
     on_host_migration: Option<HostMigrationHook>,
-    /// Id for the next created lobby.
-    next_lobby: LobbyId,
     /// Id for the next formed match.
     next_match: MatchId,
     /// All open lobbies.
@@ -96,7 +94,6 @@ impl<I: TicketIssuer> Core<I> {
             config,
             issuer,
             on_host_migration: None,
-            next_lobby: 1,
             next_match: 1,
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
@@ -158,8 +155,14 @@ impl<I: TicketIssuer> Core<I> {
             ));
         }
         self.check_metadata(&metadata)?;
-        let id = self.next_lobby;
-        self.next_lobby += 1;
+        // Random, not sequential: the id is the only thing needed to join, so a
+        // guessable id would let anyone walk into any lobby.
+        let id = loop {
+            let id = getrandom::u64().map_err(|e| format!("no OS randomness: {e}"))?;
+            if !self.lobbies.contains_key(&id) {
+                break id;
+            }
+        };
         self.lobbies.insert(
             id,
             Lobby {
@@ -349,6 +352,15 @@ impl<I: TicketIssuer> Core<I> {
             }
         });
         players.iter().copied().zip(msgs).collect()
+    }
+
+    /// Ids of all open lobbies, sorted. Lets property tests and fuzzing join
+    /// existing lobbies, since random ids can't be guessed.
+    #[cfg(any(test, fuzzing))]
+    pub fn lobby_ids(&self) -> Vec<LobbyId> {
+        let mut ids: Vec<_> = self.lobbies.keys().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Panics if the internal indexes disagree. Used by property tests and fuzzing.
@@ -728,6 +740,16 @@ mod tests {
     }
 
     /// Cancelling and disconnecting both take a player out of the queue.
+    /// Lobby ids can't be guessed from each other: two lobbies created one
+    /// after the other don't get neighbouring ids.
+    #[test]
+    fn lobby_ids_are_not_sequential() {
+        let mut c = core();
+        let a = create(&mut c, 1, 2);
+        let b = create(&mut c, 2, 2);
+        assert_ne!(a.abs_diff(b), 1);
+    }
+
     /// A mode configured with 0 players behaves like 1: the player is matched
     /// alone and never left half-queued.
     #[test]
@@ -781,7 +803,8 @@ mod tests {
                         metadata,
                     }
                 }),
-                (1u64..6).prop_map(|lobby| ClientMsg::JoinLobby { lobby }),
+                // An index into the open lobbies, resolved when the step runs.
+                (0u64..6).prop_map(|lobby| ClientMsg::JoinLobby { lobby }),
                 Just(ClientMsg::LeaveLobby),
                 metadata.prop_map(|metadata| ClientMsg::SetMetadata { metadata }),
                 any::<bool>().prop_map(|ready| ClientMsg::SetReady { ready }),
@@ -821,6 +844,12 @@ mod tests {
                 let mut c = Core::new(config(), MatchboxIssuer::new("ws://mb").unwrap());
                 for (player, msg) in steps {
                     let out = match msg {
+                        // Ids are random, so join the k-th open lobby; k past the end
+                        // stands for an id that doesn't exist.
+                        Some(ClientMsg::JoinLobby { lobby: k }) => {
+                            let lobby = c.lobby_ids().get(k as usize).copied().unwrap_or(0);
+                            c.handle(player, ClientMsg::JoinLobby { lobby })
+                        }
                         Some(msg) => c.handle(player, msg),
                         None => c.disconnect(player),
                     };
