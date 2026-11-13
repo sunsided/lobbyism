@@ -8,6 +8,8 @@ The lobby and matchmaking server for [`lobbyism`](https://crates.io/crates/lobby
 cargo install lobbyism-server
 ```
 
+Static Linux binaries are attached to the [GitHub releases](https://github.com/sunsided/lobbyism/releases), built with cargo-auditable and with a build provenance attestation (`gh attestation verify <archive> -R sunsided/lobbyism`); v0.1.0 predates both and only has a checksum.
+
 The binary is configured through environment variables, or a `.env` file in the working directory (variables already set in the environment win):
 
 | Variable | Meaning | Default |

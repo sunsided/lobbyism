@@ -225,7 +225,14 @@ The property tests throw random message sequences from several players at the st
 
 GitHub Actions runs the same checks on every push to `main` and every pull request, plus the renet example, a 30-second fuzz run per target, and [actionlint](https://github.com/rhysd/actionlint) and [zizmor](https://github.com/zizmorcore/zizmor) on the workflows themselves (`task lint:actions` does the latter locally).
 
-Releases go through [cargo-release](https://github.com/crate-ci/cargo-release), configured in `release.toml`: both crates share one version, and `cargo release patch` (or `minor`, `major`, an explicit `X.Y.Z`, or no argument to release the current version) shows what would happen; with `--execute` it bumps the version, commits, creates a signed `vX.Y.Z` tag, publishes `lobbyism` and then `lobbyism-server` to crates.io, and pushes. The tag in turn triggers the release workflow, which checks it against the crate version, runs the tests, and attaches a static `x86_64-unknown-linux-musl` server binary with a SHA-256 checksum to a GitHub release.
+Releases go through [cargo-release](https://github.com/crate-ci/cargo-release), configured in `release.toml`: both crates share one version, and `cargo release patch` (or `minor`, `major`, an explicit `X.Y.Z`, or no argument to release the current version) shows what would happen; with `--execute` it bumps the version, commits, creates a signed `vX.Y.Z` tag, publishes `lobbyism` and then `lobbyism-server` to crates.io, and pushes. The tag in turn triggers the release workflow, which checks it against the crate version, runs the tests, and attaches a static `x86_64-unknown-linux-musl` server binary with a SHA-256 checksum to a GitHub release. The binary is built with [cargo-auditable](https://github.com/rust-secure-code/cargo-auditable), so it carries its own dependency list, and the workflow signs a build provenance attestation for the archive and the binary. A downloaded release can be checked like this:
+
+```shell
+gh attestation verify lobbyism-server-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz -R sunsided/lobbyism
+cargo audit bin lobbyism-server   # known vulnerabilities in the compiled-in dependencies
+```
+
+(v0.1.0 predates both and only has the checksum.)
 
 ## License
 
