@@ -11,7 +11,7 @@ mod core;
 mod net;
 mod ticket;
 
-pub use auth::{HmacValidator, TokenValidator};
+pub use auth::{HmacValidator, LanValidator, TokenValidator};
 pub use core::{Config, Core, HostMigrationHook, Outbox};
 pub use lobbyism::proto;
 pub use net::serve;
