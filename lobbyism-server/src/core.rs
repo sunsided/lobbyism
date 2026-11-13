@@ -13,6 +13,11 @@ use std::collections::HashMap;
 pub type Outbox = Vec<(PlayerId, ServerMsg)>;
 
 /// Called with `(lobby, old_host, new_host)` when a host leaves and another member takes over.
+///
+/// Runs inside [`Core`], which [`serve`](crate::serve) keeps behind one lock for
+/// all connections: the hook must be fast and must not block (no network or disk
+/// I/O; hand work to a channel instead), and it must not panic. A slow hook
+/// stalls every player, and a panic poisons the lock for good.
 pub type HostMigrationHook = Box<dyn Fn(LobbyId, PlayerId, PlayerId) + Send>;
 
 /// Server-side limits and matchmaking rules.
@@ -102,7 +107,8 @@ impl<I: TicketIssuer> Core<I> {
         }
     }
 
-    /// Register a callback that runs whenever a lobby changes host.
+    /// Register a callback that runs whenever a lobby changes host. See
+    /// [`HostMigrationHook`] for what the callback may and may not do.
     pub fn on_host_migration(mut self, hook: HostMigrationHook) -> Self {
         self.on_host_migration = Some(hook);
         self

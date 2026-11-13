@@ -6,6 +6,13 @@ use lobbyism::proto::{MatchId, PlayerId, Ticket};
 use sha2::Sha256;
 
 /// Issues one player's connection ticket for a formed match.
+///
+/// `issue` runs inside [`Core`](crate::Core), which [`serve`](crate::serve)
+/// keeps behind one lock for all connections, once per player of every match.
+/// It must be fast and must not block (no network calls, e.g. to a game server
+/// allocator), and it must not panic: a slow issuer stalls every player, and a
+/// panic poisons the lock for good. Report failures through the `Err` variant;
+/// the players of that match then get an error instead of a ticket.
 pub trait TicketIssuer: Send {
     /// Creates the ticket for `player` in match `match_id`. `players` is the whole
     /// match in handle order. An error is reported to every player of the match.
