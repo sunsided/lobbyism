@@ -50,6 +50,41 @@ struct Shared<I> {
     sessions: HashMap<PlayerId, (u64, mpsc::Sender<ServerMsg>)>,
 }
 
+impl<I: TicketIssuer> Shared<I> {
+    /// Registers connection `conn` as `player`'s session and queues its
+    /// `Welcome`; refuses (`false`) while the player has another session.
+    fn register(&mut self, player: PlayerId, conn: u64, tx: mpsc::Sender<ServerMsg>) -> bool {
+        if self.sessions.contains_key(&player) {
+            return false;
+        }
+        tx.try_send(ServerMsg::Welcome { player })
+            .expect("fresh channel has room");
+        self.sessions.insert(player, (conn, tx));
+        true
+    }
+
+    /// Applies one client message and queues the replies.
+    ///
+    /// Handling and delivery happen under the same lock on purpose: with the
+    /// lock released in between, two lobby members acting at once could queue
+    /// their snapshots in the opposite order and both end up showing the older one.
+    fn handle(&mut self, player: PlayerId, msg: ClientMsg) {
+        let out = self.core.handle(player, msg);
+        self.deliver(out);
+    }
+
+    /// Ends connection `conn` of `player`: removes the session and the player's
+    /// lobby and queue state, unless a newer connection has taken over since.
+    fn unregister(&mut self, player: PlayerId, conn: u64) {
+        let superseded = self.sessions.get(&player).is_some_and(|(c, _)| *c != conn);
+        if !superseded {
+            self.sessions.remove(&player);
+            let out = self.core.disconnect(player);
+            self.deliver(out);
+        }
+    }
+}
+
 impl<I> Shared<I> {
     /// Queues each message for its recipient; recipients that are gone or too
     /// slow to keep up lose their session.
@@ -167,17 +202,7 @@ async fn connection<I: TicketIssuer>(
     static NEXT_CONN: AtomicU64 = AtomicU64::new(0);
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = mpsc::channel(OUTBOX_CAPACITY);
-    let registered = {
-        let mut s = shared.lock().unwrap();
-        let free = !s.sessions.contains_key(&player);
-        if free {
-            tx.try_send(ServerMsg::Welcome { player })
-                .expect("fresh channel has room");
-            s.sessions.insert(player, (conn, tx));
-        }
-        free
-    };
-    if !registered {
+    if !shared.lock().unwrap().register(player, conn, tx) {
         let message = "player already connected".to_string();
         let _ = sink
             .send(encode(&ServerMsg::Error {
@@ -214,25 +239,19 @@ async fn connection<I: TicketIssuer>(
             // Writer stopped: socket broken, peer not reading, or session dropped as too slow.
             _ = &mut writer => break Err("writer closed".into()),
         };
-        let out = match next {
-            Ok(Some(msg)) => shared.lock().unwrap().core.handle(player, msg),
+        match next {
+            Ok(Some(msg)) => shared.lock().unwrap().handle(player, msg),
             Ok(None) => break Ok(()),
             // A malformed message gets an error reply; the connection stays usable.
-            Err(ReadError::Bad(message)) => vec![(player, ServerMsg::Error { message })],
+            Err(ReadError::Bad(message)) => shared
+                .lock()
+                .unwrap()
+                .deliver(vec![(player, ServerMsg::Error { message })]),
             Err(ReadError::Fatal(e)) => break Err(e),
-        };
-        shared.lock().unwrap().deliver(out);
+        }
     };
 
-    {
-        let mut s = shared.lock().unwrap();
-        let superseded = s.sessions.get(&player).is_some_and(|(c, _)| *c != conn);
-        if !superseded {
-            s.sessions.remove(&player);
-            let out = s.core.disconnect(player);
-            s.deliver(out);
-        }
-    }
+    shared.lock().unwrap().unregister(player, conn);
     writer.abort();
     result
 }
