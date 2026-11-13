@@ -65,8 +65,10 @@ async fn host() -> Result<(), BoxError> {
         expire_seconds: 30,
         timeout_seconds: 5,
     };
+    // Shown for a manual join; any of the addresses works if the joiner can reach it.
+    let lobby_ip = addresses[0].ip();
     let game_server =
-        std::thread::spawn(move || game_server(game_socket, private_key, addresses, 2));
+        tokio::task::spawn_blocking(move || game_server(game_socket, private_key, addresses, 2));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
     let lobby_port = listener.local_addr()?.port();
@@ -101,7 +103,9 @@ async fn host() -> Result<(), BoxError> {
     };
     let announcer =
         tokio::spawn(async move { announce_broadcast(DISCOVERY_PORT, &announcement).await });
-    println!("hosting lobby {lobby} on port {lobby_port}, waiting for a player to join");
+    let url = format!("ws://{}", SocketAddr::new(lobby_ip, lobby_port));
+    println!("hosting lobby {lobby} at {url}, waiting for a player to join");
+    println!("join manually with: lan_match join {url} {lobby}");
 
     me.send(ClientMsg::SetReady { ready: true }).await?;
     let m = loop {
@@ -118,7 +122,7 @@ async fn host() -> Result<(), BoxError> {
     };
     announcer.abort();
     tokio::task::spawn_blocking(move || play(m)).await??;
-    game_server.join().map_err(|_| "game server panicked")?
+    game_server.await?
 }
 
 /// Joins the lobby at `url`, marks itself ready and plays once the host starts.
@@ -158,7 +162,12 @@ fn game_server(
     let mut last = Instant::now();
     // Keep serving a little after the last greeting, so it gets delivered.
     let mut done_at = None;
+    // Give up if not everyone shows up, e.g. a joiner's firewall blocks the game port.
+    let deadline = Instant::now() + Duration::from_secs(60);
     while done_at.is_none_or(|t: Instant| t.elapsed() < Duration::from_secs(1)) {
+        if Instant::now() > deadline {
+            return Err(format!("only {greeted} of {players} players connected").into());
+        }
         std::thread::sleep(TICK);
         let dt = last.elapsed();
         last = Instant::now();
