@@ -24,7 +24,7 @@ lan-broadcast = ["lan"]
 lan-mdns = ["lan", "dep:mdns-sd"]
 
 [dependencies]
-lobbyism = { version = "0.1.1", path = "../lobbyism", default-features = false }
+lobbyism = { version = "0.1.2", path = "../lobbyism", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hmac = "0.13"
 renet_netcode = { version = "2", optional = true }
