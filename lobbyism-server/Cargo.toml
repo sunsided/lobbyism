@@ -54,3 +54,7 @@ workspace = true
 [package.metadata.release]
 # The workspace gets a single vX.Y.Z tag, created for the lobbyism crate.
 tag = false
+
+[package.metadata.docs.rs]
+# Document the feature-gated LAN API too.
+all-features = true
