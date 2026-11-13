@@ -118,8 +118,8 @@ The binary is configured through environment variables:
 | `LOBBYISM_HMAC_SECRET` | Secret for client tokens, at least 32 bytes | required |
 | `LOBBYISM_NETCODE_KEY` | netcode private key shared with the game server, 64 hex characters | required |
 | `LOBBYISM_PROTOCOL_ID` | netcode protocol id of your game | required |
-| `LOBBYISM_GAME_SERVERS` | Comma-separated public game server addresses | required |
-| `LOBBYISM_MODES` | Queue modes and players per match, e.g. `duel=2,squad=4` | `duel=2` |
+| `LOBBYISM_GAME_SERVERS` | Comma-separated public game server addresses, 1 to 32 | required |
+| `LOBBYISM_MODES` | Queue modes and players per match (at least 1), e.g. `duel=2,squad=4` | `duel=2` |
 | `LOBBYISM_REGIONS` | Comma-separated regions clients may queue in | `eu,us` |
 
 For a local run:

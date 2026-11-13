@@ -19,6 +19,7 @@ pub type HostMigrationHook = Box<dyn Fn(LobbyId, PlayerId, PlayerId) + Send>;
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Queue modes and the number of players a match of that mode needs.
+    /// Values below 1 are treated as 1.
     pub modes: HashMap<String, u32>,
     /// Regions clients may queue in.
     pub regions: Vec<String>,
@@ -267,7 +268,9 @@ impl<I: TicketIssuer> Core<I> {
         skill: u32,
     ) -> Result<Outbox, String> {
         self.ensure_idle(player)?;
-        let needed = *self.config.modes.get(&mode).ok_or("unknown mode")? as usize;
+        // At least one player, or a 0-player mode would drain nobody and leave
+        // the player in the queue list without its index entry.
+        let needed = (*self.config.modes.get(&mode).ok_or("unknown mode")?).max(1) as usize;
         if !self.config.regions.contains(&region) {
             return Err("unknown region".into());
         }
@@ -725,6 +728,25 @@ mod tests {
     }
 
     /// Cancelling and disconnecting both take a player out of the queue.
+    /// A mode configured with 0 players behaves like 1: the player is matched
+    /// alone and never left half-queued.
+    #[test]
+    fn zero_player_mode_matches_alone_and_stays_consistent() {
+        let config = Config {
+            modes: HashMap::from([("odd".into(), 0)]),
+            ..Config::default()
+        };
+        let mut c = Core::new(config, MatchboxIssuer::new("ws://mb").unwrap());
+        for _ in 0..2 {
+            let out = enqueue(&mut c, 1, "odd", "eu", 0);
+            assert!(matches!(
+                &out[..],
+                [(1, ServerMsg::Queued { .. }), (1, ServerMsg::Matched(_))]
+            ));
+            c.check_invariants();
+        }
+    }
+
     #[test]
     fn cancel_and_disconnect_remove_from_queue() {
         let mut c = core();

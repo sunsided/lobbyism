@@ -14,9 +14,11 @@
 //! the environment take precedence.
 
 use lobbyism_server::{Config, Core, HmacValidator, NetcodeIssuer, serve};
+use std::collections::HashMap;
 use std::env;
+use std::net::SocketAddr;
 
-/// Loads the configuration from the environment (and `.env`) and serves until the listener fails.
+/// Loads the configuration from the environment (and `.env`), then serves.
 #[tokio::main]
 async fn main() -> Result<(), String> {
     tracing_subscriber::fmt::init();
@@ -34,22 +36,13 @@ async fn main() -> Result<(), String> {
     let issuer = NetcodeIssuer {
         protocol_id: parse("LOBBYISM_PROTOCOL_ID", &required("LOBBYISM_PROTOCOL_ID")?)?,
         private_key: parse_key(&required("LOBBYISM_NETCODE_KEY")?)?,
-        server_addresses: list(&required("LOBBYISM_GAME_SERVERS")?)
-            .map(|a| parse("LOBBYISM_GAME_SERVERS", a))
-            .collect::<Result<_, _>>()?,
+        server_addresses: parse_servers(&required("LOBBYISM_GAME_SERVERS")?)?,
         expire_seconds: 30,
         timeout_seconds: 15,
     };
     let modes = env::var("LOBBYISM_MODES").unwrap_or_else(|_| "duel=2".into());
     let config = Config {
-        modes: list(&modes)
-            .map(|m| {
-                let (name, n) = m
-                    .split_once('=')
-                    .ok_or(format!("LOBBYISM_MODES: bad entry {m:?}"))?;
-                Ok((name.to_string(), parse("LOBBYISM_MODES", n)?))
-            })
-            .collect::<Result<_, String>>()?,
+        modes: parse_modes(&modes)?,
         regions: list(&env::var("LOBBYISM_REGIONS").unwrap_or_else(|_| "eu,us".into()))
             .map(String::from)
             .collect(),
@@ -63,6 +56,37 @@ async fn main() -> Result<(), String> {
     serve(listener, Core::new(config, issuer), validator)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Parses `LOBBYISM_MODES` (`name=players,...`); every mode needs at least one player.
+fn parse_modes(s: &str) -> Result<HashMap<String, u32>, String> {
+    list(s)
+        .map(|m| {
+            let (name, n) = m
+                .split_once('=')
+                .ok_or(format!("LOBBYISM_MODES: bad entry {m:?}"))?;
+            let players: u32 = parse("LOBBYISM_MODES", n)?;
+            if players == 0 {
+                return Err(format!("LOBBYISM_MODES: {name} needs at least 1 player"));
+            }
+            Ok((name.trim().to_string(), players))
+        })
+        .collect()
+}
+
+/// Parses `LOBBYISM_GAME_SERVERS`: 1 to 32 addresses, the range a netcode
+/// `ConnectToken` can carry.
+fn parse_servers(s: &str) -> Result<Vec<SocketAddr>, String> {
+    let servers = list(s)
+        .map(|a| parse("LOBBYISM_GAME_SERVERS", a))
+        .collect::<Result<Vec<_>, _>>()?;
+    if servers.is_empty() || servers.len() > 32 {
+        return Err(format!(
+            "LOBBYISM_GAME_SERVERS: expected 1 to 32 addresses, got {}",
+            servers.len()
+        ));
+    }
+    Ok(servers)
 }
 
 /// The value of a required environment variable.
@@ -126,5 +150,39 @@ mod tests {
         assert!(msg.contains("LOBBYISM_HMAC_SECRET"), "{msg}");
         let e = dotenvy::Error::LineParse("s3cr3t garbage\n".into(), 0);
         assert!(!dotenv_error(&e).contains("s3cr3t"));
+    }
+}
+
+/// Tests for parsing the configuration variables.
+#[cfg(test)]
+mod config_tests {
+    use super::{parse_modes, parse_servers};
+
+    /// Valid modes parse; a mode without players is refused.
+    #[test]
+    fn modes_need_at_least_one_player() {
+        let modes = parse_modes("duel=2, solo=1").unwrap();
+        assert_eq!(modes["duel"], 2);
+        assert_eq!(modes["solo"], 1);
+        assert!(
+            parse_modes("duel=0")
+                .unwrap_err()
+                .contains("at least 1 player")
+        );
+        assert!(
+            parse_modes("").unwrap().is_empty(),
+            "a lobby-only server has no modes"
+        );
+    }
+
+    /// Game server lists must hold 1 to 32 addresses.
+    #[test]
+    fn game_servers_are_one_to_thirty_two() {
+        assert_eq!(parse_servers("127.0.0.1:5000").unwrap().len(), 1);
+        assert!(parse_servers("").is_err());
+        assert!(parse_servers(" , ").is_err());
+        let many: Vec<String> = (0..33).map(|i| format!("127.0.0.1:{}", 5000 + i)).collect();
+        assert!(parse_servers(&many.join(",")).is_err());
+        assert_eq!(parse_servers(&many[..32].join(",")).unwrap().len(), 32);
     }
 }
