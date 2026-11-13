@@ -14,6 +14,19 @@ use std::net::{IpAddr, SocketAddr};
 /// Most hosts one search returns. Any peer can announce, so without a cap a
 /// flood of made-up lobbies would grow the result (and its dedupe) without bound.
 const MAX_HOSTS: usize = 64;
+/// Most hosts one search takes from a single address, so one peer can't fill
+/// all [`MAX_HOSTS`] slots and hide the real lobbies.
+const MAX_HOSTS_PER_ADDR: usize = 4;
+
+/// Adds `host` to `hosts` unless it is already there, its address has used up
+/// its share, or the list is full. Searches keep listening either way, so a
+/// flood from one peer can't end them before the real hosts answer.
+fn collect(hosts: &mut Vec<LanHost>, host: LanHost) {
+    let from_addr = hosts.iter().filter(|h| h.addr == host.addr).count();
+    if hosts.len() < MAX_HOSTS && from_addr < MAX_HOSTS_PER_ADDR && !hosts.contains(&host) {
+        hosts.push(host);
+    }
+}
 
 /// A lobby found on the local network.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -51,7 +64,7 @@ mod broadcast {
     /// Listens on UDP `port` for `wait` and returns the distinct hosts of `game` it heard.
     ///
     /// Hosts announce once a second, so a `wait` of 2 to 3 seconds finds
-    /// everyone who is reachable. Stops early after 64 hosts. The port is shared with other listeners on
+    /// everyone who is reachable. Returns at most 64 hosts, at most 4 per address. The port is shared with other listeners on
     /// the same machine, so several game instances can search at once.
     pub async fn discover_broadcast(
         port: u16,
@@ -80,11 +93,8 @@ mod broadcast {
                 addr: from.ip(),
                 announcement,
             };
-            if host.announcement.game == game && !hosts.contains(&host) {
-                hosts.push(host);
-                if hosts.len() == super::MAX_HOSTS {
-                    break;
-                }
+            if host.announcement.game == game {
+                super::collect(&mut hosts, host);
             }
         }
         Ok(hosts)
@@ -118,7 +128,8 @@ mod mdns {
     /// Browses for `wait` and returns the distinct hosts of `game` that resolved.
     ///
     /// Blocks the calling thread; from async code, run it in
-    /// `tokio::task::spawn_blocking`. Stops early after 64 hosts. Addresses a
+    /// `tokio::task::spawn_blocking`. Returns at most 64 hosts, at most 4 per
+    /// address. Addresses a
     /// joiner can't or shouldn't connect to are skipped: loopback,
     /// unspecified, multicast, broadcast and IPv6 link-local.
     pub fn discover_mdns(game: &str, wait: Duration) -> Result<Vec<LanHost>, String> {
@@ -144,13 +155,9 @@ mod mdns {
                     addr: ip.to_ip_addr(),
                     announcement: announcement.clone(),
                 };
-                if connectable(host.addr) && !hosts.contains(&host) {
-                    hosts.push(host);
+                if connectable(host.addr) {
+                    super::collect(&mut hosts, host);
                 }
-            }
-            if hosts.len() >= super::MAX_HOSTS {
-                hosts.truncate(super::MAX_HOSTS);
-                break;
             }
         }
         let _ = daemon.shutdown();
@@ -163,6 +170,8 @@ mod mdns {
     /// loopback, unspecified, multicast and broadcast are refused, as is IPv6
     /// link-local, which a URL can't scope to an interface.
     pub(super) fn connectable(ip: IpAddr) -> bool {
+        // IPv4-mapped IPv6 (`::ffff:127.0.0.1`) gets the IPv4 checks.
+        let ip = ip.to_canonical();
         let special = ip.is_unspecified() || ip.is_loopback() || ip.is_multicast();
         !special
             && match ip {
@@ -211,9 +220,44 @@ mod tests {
             "::",
             "ff02::fb",
             "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:0.0.0.0",
+            "::ffff:255.255.255.255",
         ] {
             assert!(!connectable(bad.parse().unwrap()), "{bad}");
         }
+    }
+
+    /// One address can't take more than its share of the results, and a full
+    /// list stays full without duplicates.
+    #[test]
+    fn collect_limits_hosts_per_address_and_in_total() {
+        let host = |addr: &str, lobby| LanHost {
+            addr: addr.parse().unwrap(),
+            announcement: LanAnnouncement {
+                game: "demo".into(),
+                name: "host".into(),
+                lobby_port: 7878,
+                lobby,
+                code_required: false,
+            },
+        };
+        let mut hosts = Vec::new();
+        for lobby in 0..10 {
+            collect(&mut hosts, host("10.0.0.66", lobby));
+        }
+        collect(&mut hosts, host("10.0.0.7", 1));
+        collect(&mut hosts, host("10.0.0.7", 1));
+        assert_eq!(hosts.len(), MAX_HOSTS_PER_ADDR + 1);
+        assert_eq!(hosts.last(), Some(&host("10.0.0.7", 1)));
+
+        for i in 0..100u64 {
+            collect(
+                &mut hosts,
+                host(&format!("10.1.{}.{}", i / 200, i % 200 + 1), i),
+            );
+        }
+        assert_eq!(hosts.len(), MAX_HOSTS);
     }
 
     /// Announcements of the right game are found once each; others and garbage are ignored.
