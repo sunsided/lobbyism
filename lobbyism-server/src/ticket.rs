@@ -7,7 +7,8 @@ use sha2::Sha256;
 
 /// Issues one player's connection ticket for a formed match.
 pub trait TicketIssuer: Send {
-    /// `players` is the whole match in handle order; `player` is the recipient.
+    /// Creates the ticket for `player` in match `match_id`. `players` is the whole
+    /// match in handle order. An error is reported to every player of the match.
     fn issue(
         &self,
         match_id: MatchId,
@@ -24,7 +25,9 @@ pub trait TicketIssuer: Send {
 /// signaling server that checks per-player tokens is still the stronger gate.
 #[derive(Clone)]
 pub struct MatchboxIssuer {
+    /// Signaling server base URL, without the room path.
     base_url: String,
+    /// Random per-process key that room names are derived from.
     room_key: [u8; 32],
 }
 
@@ -41,6 +44,7 @@ impl MatchboxIssuer {
 }
 
 impl TicketIssuer for MatchboxIssuer {
+    /// Room name: the first 128 bits of HMAC-SHA256(room key, match id), hex-encoded.
     fn issue(
         &self,
         match_id: MatchId,
@@ -62,6 +66,7 @@ impl TicketIssuer for MatchboxIssuer {
 #[cfg(feature = "netcode")]
 pub use netcode::NetcodeIssuer;
 
+/// The renet / netcode.io issuer, behind the `netcode` feature.
 #[cfg(feature = "netcode")]
 mod netcode {
     use super::*;
@@ -77,8 +82,13 @@ mod netcode {
     /// game server can group connections by match.
     #[derive(Clone)]
     pub struct NetcodeIssuer {
+        /// Your game's netcode protocol id; tokens for another id are rejected.
         pub protocol_id: u64,
+        /// Key the tokens are encrypted with, shared with the game server.
+        /// Never send it to a client.
         pub private_key: [u8; NETCODE_KEY_BYTES],
+        /// Public game server addresses written into every token. The game
+        /// server only accepts tokens that list one of its own addresses.
         pub server_addresses: Vec<SocketAddr>,
         /// How long the token may be used to start a connection.
         pub expire_seconds: u64,
@@ -87,6 +97,7 @@ mod netcode {
     }
 
     impl TicketIssuer for NetcodeIssuer {
+        /// A fresh `ConnectToken` per player, with the match id in the user data.
         fn issue(
             &self,
             match_id: MatchId,
@@ -118,10 +129,12 @@ mod netcode {
         }
     }
 
+    /// Tests for netcode token generation.
     #[cfg(test)]
     mod tests {
         use super::*;
 
+        /// An issued token parses back with the player as client id and the right protocol id.
         #[test]
         fn token_round_trips_and_carries_match_id() {
             let issuer = NetcodeIssuer {

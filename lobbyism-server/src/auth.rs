@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Validates the token a client sends in `ClientMsg::Hello`.
 pub trait TokenValidator: Send + Sync + 'static {
+    /// Returns the player the token belongs to, or the reason it was rejected.
+    /// The reason is sent back to the client, so it must not leak secrets.
     fn validate(&self, token: &str) -> Result<PlayerId, String>;
 }
 
@@ -16,6 +18,7 @@ pub trait TokenValidator: Send + Sync + 'static {
 /// secret; this server only checks them. The secret never leaves the backend.
 #[derive(Clone)]
 pub struct HmacValidator {
+    /// Shared HMAC-SHA256 key, at least 32 bytes.
     secret: Vec<u8>,
 }
 
@@ -36,6 +39,7 @@ impl HmacValidator {
         format!("{payload}.{tag}")
     }
 
+    /// HMAC-SHA256 over `payload`, ready to finalize or verify.
     fn mac(&self, payload: &str) -> Hmac<Sha256> {
         let mut mac =
             Hmac::<Sha256>::new_from_slice(&self.secret).expect("HMAC accepts any key length");
@@ -45,7 +49,9 @@ impl HmacValidator {
 }
 
 impl TokenValidator for HmacValidator {
+    /// Checks the tag in constant time first, then parses the payload and the expiry.
     fn validate(&self, token: &str) -> Result<PlayerId, String> {
+        /// One message for every malformed or forged token, so failures reveal nothing.
         const INVALID: &str = "invalid token";
         let (payload, tag_hex) = token.rsplit_once('.').ok_or(INVALID)?;
         let tag = decode_hex(tag_hex).ok_or(INVALID)?;
@@ -65,6 +71,7 @@ impl TokenValidator for HmacValidator {
     }
 }
 
+/// Lowercase hex encoding, the inverse of [`decode_hex`].
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -82,22 +89,27 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Unit and property tests for token signing and validation.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Test-only HMAC secret, exactly 32 bytes.
     const SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
 
+    /// An expiry that never passes during a test run.
     fn far_future() -> u64 {
         u64::MAX / 2
     }
 
+    /// A token signed with the validator's secret is accepted.
     #[test]
     fn accepts_signed_token() {
         let v = HmacValidator::new(SECRET).unwrap();
         assert_eq!(v.validate(&v.sign(42, far_future())), Ok(42));
     }
 
+    /// Tampered, foreign-signed, expired and malformed tokens are all rejected.
     #[test]
     fn rejects_tampered_foreign_expired_and_garbage() {
         let v = HmacValidator::new(SECRET).unwrap();
@@ -115,6 +127,7 @@ mod tests {
     }
 
     proptest::proptest! {
+        /// Every signed, unexpired token validates to its player.
         #[test]
         fn signed_tokens_validate(player: u64, ttl in 60u64..1 << 40) {
             let v = HmacValidator::new(SECRET).unwrap();
@@ -135,6 +148,7 @@ mod tests {
             proptest::prop_assert!(v.validate(&mutated).is_err(), "{} accepted", mutated);
         }
 
+        /// Validation of arbitrary strings returns an error instead of panicking.
         #[test]
         fn arbitrary_input_never_panics(s in "\\PC*") {
             let v = HmacValidator::new(SECRET).unwrap();
@@ -142,6 +156,7 @@ mod tests {
         }
     }
 
+    /// Secrets shorter than 32 bytes are refused.
     #[test]
     fn rejects_short_secret() {
         assert!(HmacValidator::new(b"short".to_vec()).is_err());

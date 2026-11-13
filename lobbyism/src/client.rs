@@ -5,9 +5,12 @@ use futures_util::{SinkExt, StreamExt};
 use std::fmt;
 use tokio_tungstenite_wasm::{Message, WebSocketStream};
 
+/// Everything that can go wrong talking to the lobby server.
 #[derive(Debug)]
 pub enum Error {
+    /// The WebSocket failed to connect, send or receive.
     WebSocket(tokio_tungstenite_wasm::Error),
+    /// A message could not be encoded, or the server sent one that doesn't parse.
     Json(serde_json::Error),
     /// The server refused the `Hello` (bad or expired token, already connected).
     Rejected(String),
@@ -16,6 +19,7 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
+    /// One line with the error kind and its cause.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::WebSocket(e) => write!(f, "websocket: {e}"),
@@ -29,12 +33,14 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl From<tokio_tungstenite_wasm::Error> for Error {
+    /// Wraps a WebSocket error.
     fn from(e: tokio_tungstenite_wasm::Error) -> Self {
         Error::WebSocket(e)
     }
 }
 
 impl From<serde_json::Error> for Error {
+    /// Wraps a JSON encoding or decoding error.
     fn from(e: serde_json::Error) -> Self {
         Error::Json(e)
     }
@@ -42,7 +48,9 @@ impl From<serde_json::Error> for Error {
 
 /// An authenticated connection to the lobby server.
 pub struct LobbyClient {
+    /// The underlying WebSocket, carrying JSON text frames.
     ws: WebSocketStream,
+    /// The id from the server's `Welcome`.
     player: PlayerId,
 }
 
@@ -72,6 +80,7 @@ impl LobbyClient {
         self.player
     }
 
+    /// Send one message to the server.
     pub async fn send(&mut self, msg: ClientMsg) -> Result<(), Error> {
         self.ws
             .send(Message::text(serde_json::to_string(&msg)?))

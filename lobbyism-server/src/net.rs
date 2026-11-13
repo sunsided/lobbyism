@@ -19,7 +19,9 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Outgoing messages buffered per client before it counts as too slow and is dropped.
 const OUTBOX_CAPACITY: usize = 256;
 
+/// State shared by all connections, behind one mutex.
 struct Shared<I> {
+    /// The lobby and queue state machine.
     core: Core<I>,
     /// Live connection per player, tagged with a connection id so a stale
     /// connection never tears down a newer one for the same player.
@@ -27,6 +29,8 @@ struct Shared<I> {
 }
 
 impl<I> Shared<I> {
+    /// Queues each message for its recipient; recipients that are gone or too
+    /// slow to keep up lose their session.
     fn deliver(&mut self, out: Outbox) {
         for (player, msg) in out {
             let Some((_, tx)) = self.sessions.get(&player) else {
@@ -63,6 +67,8 @@ where
     }
 }
 
+/// Serves one client: WebSocket handshake, `Hello` authentication, then
+/// messages until the client leaves; cleans up the player's lobby and queue state.
 async fn connection<I: TicketIssuer>(
     stream: TcpStream,
     shared: Arc<Mutex<Shared<I>>>,
@@ -97,6 +103,7 @@ async fn connection<I: TicketIssuer>(
         }
     };
 
+    /// Source of per-connection ids that tell sessions of the same player apart.
     static NEXT_CONN: AtomicU64 = AtomicU64::new(0);
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = mpsc::channel(OUTBOX_CAPACITY);
@@ -179,6 +186,7 @@ where
     }
 }
 
+/// Encodes a server message as a JSON text frame.
 fn encode(msg: &ServerMsg) -> Message {
     Message::text(serde_json::to_string(msg).expect("ServerMsg serializes"))
 }

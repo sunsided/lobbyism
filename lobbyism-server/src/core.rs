@@ -31,6 +31,7 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// A single `duel` mode for two players, regions `eu` and `us`, buckets of 100 skill points, lobbies of up to 16 players and 4 KiB of metadata.
     fn default() -> Self {
         Self {
             modes: HashMap::from([("duel".into(), 2)]),
@@ -42,34 +43,53 @@ impl Default for Config {
     }
 }
 
+/// Identifies one matchmaking queue; only players with equal keys are matched.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct QueueKey {
+    /// Game mode, one of [`Config::modes`].
     mode: String,
+    /// Region, one of [`Config::regions`].
     region: String,
+    /// Skill divided by [`Config::skill_bucket_width`].
     bucket: u32,
 }
 
+/// Server-side state of one lobby.
 struct Lobby {
+    /// Current host; always one of `members`.
     host: PlayerId,
+    /// Upper bound for `members.len()`.
     max_players: u32,
+    /// Free-form metadata set by the host.
     metadata: Metadata,
+    /// Members in join order; never empty while the lobby exists.
     members: Vec<Member>,
 }
 
 /// All lobby and queue state. In-memory only.
 pub struct Core<I> {
+    /// Limits and matchmaking rules.
     config: Config,
+    /// Creates the transport ticket for every player of a formed match.
     issuer: I,
+    /// Optional callback for host changes.
     on_host_migration: Option<HostMigrationHook>,
+    /// Id for the next created lobby.
     next_lobby: LobbyId,
+    /// Id for the next formed match.
     next_match: MatchId,
+    /// All open lobbies.
     lobbies: HashMap<LobbyId, Lobby>,
+    /// Reverse index: which lobby a player is in.
     player_lobby: HashMap<PlayerId, LobbyId>,
+    /// Waiting players per queue, in arrival order; empty queues are removed.
     queues: HashMap<QueueKey, Vec<PlayerId>>,
+    /// Reverse index: which queue a player waits in.
     player_queue: HashMap<PlayerId, QueueKey>,
 }
 
 impl<I: TicketIssuer> Core<I> {
+    /// Empty state with the given rules and ticket issuer.
     pub fn new(config: Config, issuer: I) -> Self {
         Self {
             config,
@@ -122,6 +142,7 @@ impl<I: TicketIssuer> Core<I> {
         out
     }
 
+    /// Handles [`ClientMsg::CreateLobby`]: the player becomes host of a new lobby.
     fn create(
         &mut self,
         player: PlayerId,
@@ -154,6 +175,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(self.broadcast(id))
     }
 
+    /// Handles [`ClientMsg::JoinLobby`].
     fn join(&mut self, player: PlayerId, id: LobbyId) -> Result<Outbox, String> {
         self.ensure_idle(player)?;
         let lobby = self.lobbies.get_mut(&id).ok_or("no such lobby")?;
@@ -168,6 +190,8 @@ impl<I: TicketIssuer> Core<I> {
         Ok(self.broadcast(id))
     }
 
+    /// Handles [`ClientMsg::LeaveLobby`]: closes an emptied lobby, or migrates
+    /// the host to the next member in join order.
     fn leave(&mut self, player: PlayerId) -> Result<Outbox, String> {
         let id = self.player_lobby.remove(&player).ok_or("not in a lobby")?;
         let lobby = self
@@ -197,6 +221,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(out)
     }
 
+    /// Handles [`ClientMsg::SetMetadata`] (host only).
     fn set_metadata(&mut self, player: PlayerId, metadata: Metadata) -> Result<Outbox, String> {
         self.check_metadata(&metadata)?;
         let id = self.hosted_lobby(player)?;
@@ -204,6 +229,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(self.broadcast(id))
     }
 
+    /// Handles [`ClientMsg::SetReady`].
     fn set_ready(&mut self, player: PlayerId, ready: bool) -> Result<Outbox, String> {
         let id = *self.player_lobby.get(&player).ok_or("not in a lobby")?;
         let lobby = self.lobbies.get_mut(&id).unwrap();
@@ -216,6 +242,8 @@ impl<I: TicketIssuer> Core<I> {
         Ok(self.broadcast(id))
     }
 
+    /// Handles [`ClientMsg::StartMatch`]: host only, all members ready; the lobby
+    /// is consumed and its members get their tickets.
     fn start(&mut self, player: PlayerId) -> Result<Outbox, String> {
         let id = self.hosted_lobby(player)?;
         if !self.lobbies[&id].members.iter().all(|m| m.ready) {
@@ -229,6 +257,8 @@ impl<I: TicketIssuer> Core<I> {
         Ok(self.form_match(&players))
     }
 
+    /// Handles [`ClientMsg::Enqueue`]: forms a match as soon as the queue holds
+    /// enough players for the mode.
     fn enqueue(
         &mut self,
         player: PlayerId,
@@ -273,6 +303,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(out)
     }
 
+    /// Handles [`ClientMsg::CancelQueue`].
     fn cancel_queue(&mut self, player: PlayerId) -> Result<Outbox, String> {
         if !self.remove_from_queue(player) {
             return Err("not queued".into());
@@ -280,6 +311,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(vec![(player, ServerMsg::Dequeued)])
     }
 
+    /// Removes the player from its queue, if any; returns whether it was queued.
     fn remove_from_queue(&mut self, player: PlayerId) -> bool {
         let Some(key) = self.player_queue.remove(&player) else {
             return false;
@@ -372,6 +404,7 @@ impl<I: TicketIssuer> Core<I> {
         );
     }
 
+    /// Fails if the player is already in a lobby or a queue.
     fn ensure_idle(&self, player: PlayerId) -> Result<(), String> {
         if self.player_lobby.contains_key(&player) {
             return Err("already in a lobby".into());
@@ -382,6 +415,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(())
     }
 
+    /// The player's lobby, if the player is its host.
     fn hosted_lobby(&self, player: PlayerId) -> Result<LobbyId, String> {
         let id = *self.player_lobby.get(&player).ok_or("not in a lobby")?;
         if self.lobbies[&id].host != player {
@@ -390,6 +424,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(id)
     }
 
+    /// Fails if the metadata exceeds [`Config::max_metadata_bytes`].
     fn check_metadata(&self, metadata: &Metadata) -> Result<(), String> {
         let bytes: usize = metadata.iter().map(|(k, v)| k.len() + v.len()).sum();
         if bytes > self.config.max_metadata_bytes {
@@ -401,6 +436,7 @@ impl<I: TicketIssuer> Core<I> {
         Ok(())
     }
 
+    /// The current state of lobby `id`, addressed to each of its members.
     fn broadcast(&self, id: LobbyId) -> Outbox {
         let lobby = &self.lobbies[&id];
         let info = LobbyInfo {
@@ -418,6 +454,7 @@ impl<I: TicketIssuer> Core<I> {
     }
 }
 
+/// Unit tests for lobby and queue transitions, plus property tests.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,10 +462,12 @@ mod tests {
     use lobbyism::proto::Ticket;
     use std::sync::{Arc, Mutex};
 
+    /// A state machine with the default config and a matchbox issuer.
     fn core() -> Core<MatchboxIssuer> {
         Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap())
     }
 
+    /// Creates a lobby for `host` and returns its id, asserting the expected reply.
     fn create(c: &mut Core<MatchboxIssuer>, host: PlayerId, max: u32) -> LobbyId {
         let out = c.handle(
             host,
@@ -443,6 +482,7 @@ mod tests {
         }
     }
 
+    /// The last lobby snapshot in an outbox.
     fn last_lobby(out: &Outbox) -> &LobbyInfo {
         out.iter()
             .rev()
@@ -456,10 +496,12 @@ mod tests {
             .expect("lobby update")
     }
 
+    /// Whether the outbox is exactly one error reply.
     fn is_error(out: &Outbox) -> bool {
         matches!(&out[..], [(_, ServerMsg::Error { .. })])
     }
 
+    /// Sends an `Enqueue` for `p`.
     fn enqueue(
         c: &mut Core<MatchboxIssuer>,
         p: PlayerId,
@@ -477,6 +519,7 @@ mod tests {
         )
     }
 
+    /// Joining broadcasts to all members; the last member leaving closes the lobby.
     #[test]
     fn create_join_leave_closes_empty_lobby() {
         let mut c = core();
@@ -494,6 +537,7 @@ mod tests {
         );
     }
 
+    /// Full or unknown lobbies, a second lobby per player, and zero-size lobbies are refused.
     #[test]
     fn join_rejects_full_unknown_and_double_membership() {
         let mut c = core();
@@ -517,6 +561,7 @@ mod tests {
         )));
     }
 
+    /// When the host leaves, the next member in join order takes over and the hook runs.
     #[test]
     fn host_leaving_migrates_and_runs_hook() {
         let seen = Arc::new(Mutex::new(None));
@@ -549,6 +594,7 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), Some((id, 1, 2)));
     }
 
+    /// A disconnect removes the player and notifies only the remaining members.
     #[test]
     fn disconnect_leaves_lobby_without_messaging_the_gone_player() {
         let mut c = core();
@@ -565,6 +611,7 @@ mod tests {
         );
     }
 
+    /// Only the host may change metadata or start, and metadata size is capped.
     #[test]
     fn metadata_and_start_are_host_only_and_bounded() {
         let mut c = core();
@@ -594,6 +641,7 @@ mod tests {
         assert!(is_error(&c.handle(2, ClientMsg::StartMatch)));
     }
 
+    /// Starting needs everyone ready, gives every member the same room, and frees them.
     #[test]
     fn start_requires_all_ready_then_issues_tickets_and_frees_players() {
         let mut c = core();
@@ -628,6 +676,7 @@ mod tests {
         create(&mut c, 1, 2);
     }
 
+    /// Only players with the same mode, region and skill bucket are matched.
     #[test]
     fn queue_matches_only_same_mode_region_and_bucket() {
         let mut c = core();
@@ -658,6 +707,7 @@ mod tests {
         assert!(is_error(&c.handle(1, ClientMsg::CancelQueue)));
     }
 
+    /// Unknown modes and regions, and queueing twice or while in a lobby, are refused.
     #[test]
     fn queue_rejects_unknown_mode_region_and_double_entry() {
         let mut c = core();
@@ -674,6 +724,7 @@ mod tests {
         )));
     }
 
+    /// Cancelling and disconnecting both take a player out of the queue.
     #[test]
     fn cancel_and_disconnect_remove_from_queue() {
         let mut c = core();
@@ -692,6 +743,7 @@ mod tests {
         );
     }
 
+    /// Property tests: random op sequences must keep the indexes consistent.
     mod props {
         use super::*;
         use proptest::collection::{btree_map, vec};
@@ -730,6 +782,7 @@ mod tests {
             (1u64..7, prop::option::weighted(0.9, msg))
         }
 
+        /// A config with a 2-player and a 3-player mode, so queues of both sizes occur.
         fn config() -> Config {
             Config {
                 modes: HashMap::from([("duel".into(), 2), ("trio".into(), 3)]),
@@ -739,6 +792,8 @@ mod tests {
         }
 
         proptest! {
+            /// Any sequence of messages and disconnects keeps the internal indexes consistent,
+            /// and matched players are freed.
             #[test]
             fn invariants_hold_for_any_op_sequence(steps in vec(step(), 0..80)) {
                 let mut c = Core::new(config(), MatchboxIssuer::new("ws://mb").unwrap());

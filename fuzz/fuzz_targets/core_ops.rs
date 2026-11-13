@@ -8,17 +8,46 @@ use lobbyism::proto::{ClientMsg, Metadata, ServerMsg};
 use lobbyism_server::{Config, Core, MatchboxIssuer};
 use std::collections::HashMap;
 
+/// One fuzzer-chosen action; small integer domains make players collide often.
 #[derive(Arbitrary, Debug)]
 enum Op {
-    Create { max_players: u8, meta_len: u16 },
-    Join { lobby: u8 },
+    /// `CreateLobby`.
+    Create {
+        /// Mapped to `0..6`, so invalid sizes (0) and full lobbies both occur.
+        max_players: u8,
+        /// Metadata value length, mapped to `0..5000` to cross the size limit.
+        meta_len: u16,
+    },
+    /// `JoinLobby`.
+    Join {
+        /// Mapped to `0..8`; includes ids that never existed.
+        lobby: u8,
+    },
+    /// `LeaveLobby`.
     Leave,
-    SetMetadata { meta_len: u16 },
+    /// `SetMetadata`.
+    SetMetadata {
+        /// Metadata value length, mapped to `0..5000`.
+        meta_len: u16,
+    },
+    /// `SetReady`.
     SetReady(bool),
+    /// `StartMatch`.
     Start,
-    Enqueue { mode: u8, region: u8, skill: u16 },
+    /// `Enqueue`.
+    Enqueue {
+        /// Index into `duel`, `trio` and the unknown `chess`.
+        mode: u8,
+        /// Index into `eu`, `us` and the unknown `mars`.
+        region: u8,
+        /// Skill rating, spread over several buckets.
+        skill: u16,
+    },
+    /// `CancelQueue`.
     Cancel,
+    /// A second `Hello`, which must be refused.
     Hello,
+    /// The player's connection drops.
     Disconnect,
 }
 

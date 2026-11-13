@@ -22,26 +22,45 @@ pub type Metadata = BTreeMap<String, String>;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     /// Authenticate the connection. Must be the first message.
-    Hello { token: String },
+    Hello {
+        /// Token issued by the game's auth backend; the server's token validator
+        /// turns it into a [`PlayerId`].
+        token: String,
+    },
     /// Create a lobby and become its host.
     CreateLobby {
+        /// Maximum number of members, the host included. Bounded by the server.
         max_players: u32,
+        /// Initial lobby metadata. Bounded in size by the server.
         metadata: Metadata,
     },
     /// Join an existing lobby.
-    JoinLobby { lobby: LobbyId },
+    JoinLobby {
+        /// The lobby to join.
+        lobby: LobbyId,
+    },
     /// Leave the current lobby.
     LeaveLobby,
     /// Replace the lobby metadata. Host only.
-    SetMetadata { metadata: Metadata },
+    SetMetadata {
+        /// The new metadata; replaces the old map entirely.
+        metadata: Metadata,
+    },
     /// Set this player's ready flag in the current lobby.
-    SetReady { ready: bool },
+    SetReady {
+        /// Whether the player is ready to start.
+        ready: bool,
+    },
     /// Start the match. Host only; every member must be ready.
     StartMatch,
     /// Enter the matchmaking queue.
     Enqueue {
+        /// Game mode, one of the modes the server is configured with.
         mode: String,
+        /// Region, one of the regions the server is configured with.
         region: String,
+        /// Skill rating; the server groups players into buckets of equal width.
+        /// Client-reported, so not trustworthy for ranked play.
         skill: u32,
     },
     /// Leave the matchmaking queue.
@@ -53,21 +72,33 @@ pub enum ClientMsg {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     /// Authentication succeeded.
-    Welcome { player: PlayerId },
+    Welcome {
+        /// The identity the server derived from the token.
+        player: PlayerId,
+    },
     /// Current lobby state; sent to all members after every change.
     Lobby(LobbyInfo),
     /// The host left and `new_host` took over. Followed by a [`ServerMsg::Lobby`] update.
     HostMigrated {
+        /// The lobby whose host changed.
         lobby: LobbyId,
+        /// The host that left.
         old_host: PlayerId,
+        /// The member that took over (the next one in join order).
         new_host: PlayerId,
     },
     /// This player is no longer in a lobby (left, or the lobby closed).
-    LeftLobby { lobby: LobbyId },
+    LeftLobby {
+        /// The lobby the player left.
+        lobby: LobbyId,
+    },
     /// This player is waiting in the matchmaking queue.
     Queued {
+        /// The queue's game mode.
         mode: String,
+        /// The queue's region.
         region: String,
+        /// The skill bucket the player was sorted into.
         bucket: u32,
     },
     /// This player left the matchmaking queue.
@@ -75,35 +106,47 @@ pub enum ServerMsg {
     /// A match was formed. Hand `ticket` to the game transport.
     Matched(MatchInfo),
     /// A request failed.
-    Error { message: String },
+    Error {
+        /// Human-readable reason, meant for logs rather than for players.
+        message: String,
+    },
 }
 
 /// Snapshot of a lobby.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LobbyInfo {
+    /// The lobby's identity.
     pub id: LobbyId,
+    /// The current host, who may change metadata and start the match.
     pub host: PlayerId,
+    /// Maximum number of members, the host included.
     pub max_players: u32,
+    /// Free-form metadata set by the host.
     pub metadata: Metadata,
     /// Members in join order, with their ready flag.
     pub members: Vec<Member>,
 }
 
+/// One member of a lobby.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
+    /// The member's identity.
     pub player: PlayerId,
+    /// Whether the member marked themselves ready.
     pub ready: bool,
 }
 
 /// A formed match, as seen by one of its players.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchInfo {
+    /// The match's identity; also written into netcode tickets' user data.
     pub id: MatchId,
     /// All players, in a stable order. A player's index is its handle
     /// (for example its GGRS player handle).
     pub players: Vec<PlayerId>,
     /// Index of the receiving player in `players`.
     pub handle: usize,
+    /// What the receiving player needs to connect to the game.
     pub ticket: Ticket,
 }
 
@@ -113,17 +156,24 @@ pub struct MatchInfo {
 pub enum Ticket {
     /// A netcode.io / renet `ConnectToken`, serialized with `ConnectToken::write`.
     Netcode {
+        /// Game server addresses the token is valid for.
         addresses: Vec<SocketAddr>,
+        /// The serialized token; read it with `ConnectToken::read`.
         connect_token: Vec<u8>,
     },
     /// A matchbox signaling room URL. Peers use `MatchInfo::players` as the GGRS peer list.
-    Matchbox { room_url: String },
+    Matchbox {
+        /// Signaling room URL, including the `?next=N` group size.
+        room_url: String,
+    },
 }
 
+/// Tests for the JSON wire format.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Messages are internally tagged by `type`, with snake_case names.
     #[test]
     fn json_shape_is_tagged() {
         let json = serde_json::to_string(&ClientMsg::SetReady { ready: true }).unwrap();

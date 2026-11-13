@@ -15,11 +15,15 @@ use renet_netcode::{
 use std::net::UdpSocket;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// netcode protocol id shared by the lobby and the game server.
 const PROTOCOL_ID: u64 = 0x10bb_1500;
+/// Lobby token secret; a real deployment keeps it in a secret store.
 const HMAC_SECRET: &[u8] = b"example-secret-example-secret-32";
 
+/// Error type that crosses task boundaries.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Starts the game server and the lobby, matches two players and connects both over renet.
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     // The game server and the lobby share the netcode private key; clients never see it.
@@ -54,6 +58,7 @@ async fn main() -> Result<(), BoxError> {
     tokio::task::spawn_blocking(move || play(game_socket, private_key, [a, b])).await?
 }
 
+/// Connects one player to the lobby, queues for a duel and waits for the match.
 async fn queue_for_duel(url: &str, token: String) -> Result<MatchInfo, BoxError> {
     let mut client = LobbyClient::connect(url, &token).await?;
     client

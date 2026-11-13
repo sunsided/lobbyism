@@ -8,3 +8,15 @@ version = "0.1.0"
 edition = "2024"
 license = "EUPL-1.2"
 repository = "https://github.com/sunsided/lobbyism"
+
+# Documentation is required on every item, private ones included; CI runs
+# clippy with -D warnings, so a missing doc comment fails the build.
+[workspace.lints.rust]
+missing_docs = "warn"
+# cargo-fuzz builds with `--cfg fuzzing`, which exposes `Core::check_invariants`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
+[workspace.lints.clippy]
+missing_docs_in_private_items = "warn"
+# Modules are `name.rs` plus an optional `name/` folder, never `name/mod.rs`.
+mod_module_files = "warn"

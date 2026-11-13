@@ -33,3 +33,6 @@ required-features = ["client"]
 [[test]]
 name = "handshake"
 required-features = ["client"]
+
+[lints]
+workspace = true

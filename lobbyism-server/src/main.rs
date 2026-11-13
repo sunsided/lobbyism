@@ -16,6 +16,7 @@
 use lobbyism_server::{Config, Core, HmacValidator, NetcodeIssuer, serve};
 use std::env;
 
+/// Loads the configuration from the environment (and `.env`) and serves until the listener fails.
 #[tokio::main]
 async fn main() -> Result<(), String> {
     tracing_subscriber::fmt::init();
@@ -64,10 +65,12 @@ async fn main() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The value of a required environment variable.
 fn required(name: &str) -> Result<String, String> {
     env::var(name).map_err(|_| format!("{name} is required"))
 }
 
+/// Parses a configuration value, naming the variable in the error.
 fn parse<T: std::str::FromStr>(name: &str, value: &str) -> Result<T, String> {
     value
         .trim()
@@ -75,10 +78,12 @@ fn parse<T: std::str::FromStr>(name: &str, value: &str) -> Result<T, String> {
         .map_err(|_| format!("{name}: cannot parse {value:?}"))
 }
 
+/// The non-empty, trimmed items of a comma-separated list.
 fn list(s: &str) -> impl Iterator<Item = &str> {
     s.split(',').map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// Decodes the 32-byte netcode key from 64 hex characters.
 fn parse_key(hex: &str) -> Result<[u8; 32], String> {
     let err = || "LOBBYISM_NETCODE_KEY must be 64 hex chars".to_string();
     if hex.len() != 64 || !hex.is_ascii() {
@@ -107,10 +112,12 @@ fn dotenv_error(e: &dotenvy::Error) -> String {
     }
 }
 
+/// Tests for the binary's configuration handling.
 #[cfg(all(test, feature = "dotenv"))]
 mod tests {
     use super::dotenv_error;
 
+    /// A malformed `.env` line is reported by variable name, never with its value.
     #[test]
     fn parse_errors_never_echo_values() {
         let e = dotenvy::Error::LineParse("LOBBYISM_HMAC_SECRET=\"s3cr3t\n".into(), 21);

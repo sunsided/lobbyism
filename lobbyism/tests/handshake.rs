@@ -3,8 +3,10 @@
 use lobbyism::{Error, LobbyClient};
 use lobbyism_server::{Config, Core, HmacValidator, MatchboxIssuer, serve};
 
+/// Test-only HMAC secret, exactly 32 bytes.
 const SECRET: &[u8] = b"handshake-test-secret-32-bytes!!";
 
+/// Starts a server on a random local port; returns its URL and the validator to sign tokens with.
 async fn start() -> (String, HmacValidator) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -14,6 +16,7 @@ async fn start() -> (String, HmacValidator) {
     (url, validator)
 }
 
+/// A correctly signed token gets `Welcome`; a token signed with another secret is rejected.
 #[tokio::test]
 async fn valid_token_is_welcomed_and_bad_token_rejected() {
     let (url, validator) = start().await;
@@ -31,6 +34,7 @@ async fn valid_token_is_welcomed_and_bad_token_rejected() {
     ));
 }
 
+/// A player can hold only one connection at a time.
 #[tokio::test]
 async fn second_connection_for_same_player_is_rejected() {
     let (url, validator) = start().await;
