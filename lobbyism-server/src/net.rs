@@ -14,12 +14,23 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 /// Largest accepted client frame; protocol messages are tiny.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
-/// A client must authenticate within this time.
-const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Outgoing messages buffered per client before it counts as too slow and is dropped.
 const OUTBOX_CAPACITY: usize = 256;
 /// Pause after a failed `accept()`, so running out of file descriptors doesn't spin.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Time limits for one connection.
+#[derive(Debug, Clone, Copy)]
+struct Timeouts {
+    /// Deadline from accepting the TCP connection to receiving `Hello`,
+    /// WebSocket handshake included.
+    hello: Duration,
+}
+
+/// The limits `serve` uses; tests run with shorter ones.
+const TIMEOUTS: Timeouts = Timeouts {
+    hello: Duration::from_secs(10),
+};
 
 /// State shared by all connections, behind one mutex.
 struct Shared<I> {
@@ -47,8 +58,26 @@ impl<I> Shared<I> {
     }
 }
 
-/// Accept WebSocket clients on `listener` until it fails.
+/// Accepts WebSocket clients on `listener` and serves them.
+///
+/// Runs until the surrounding task is dropped: failed accepts are logged and
+/// retried, so it doesn't return in practice. The `Result` is kept for
+/// compatibility.
 pub async fn serve<I, V>(listener: TcpListener, core: Core<I>, validator: V) -> std::io::Result<()>
+where
+    I: TicketIssuer + 'static,
+    V: TokenValidator,
+{
+    serve_with(listener, core, validator, TIMEOUTS).await
+}
+
+/// [`serve`] with explicit time limits.
+async fn serve_with<I, V>(
+    listener: TcpListener,
+    core: Core<I>,
+    validator: V,
+    timeouts: Timeouts,
+) -> std::io::Result<()>
 where
     I: TicketIssuer + 'static,
     V: TokenValidator,
@@ -71,7 +100,7 @@ where
         };
         let (shared, validator) = (shared.clone(), validator.clone());
         tokio::spawn(async move {
-            if let Err(e) = connection(stream, shared, &*validator).await {
+            if let Err(e) = connection(stream, shared, &*validator, timeouts).await {
                 tracing::debug!(%addr, "connection ended: {e}");
             }
         });
@@ -84,17 +113,25 @@ async fn connection<I: TicketIssuer>(
     stream: TcpStream,
     shared: Arc<Mutex<Shared<I>>>,
     validator: &dyn TokenValidator,
+    timeouts: Timeouts,
 ) -> Result<(), String> {
+    // One deadline for handshake and Hello: a client that connects and stays
+    // silent must not hold a task and a file descriptor indefinitely.
+    let deadline = tokio::time::Instant::now() + timeouts.hello;
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_MESSAGE_BYTES));
-    let ws = tokio_tungstenite::accept_async_with_config(stream, Some(config))
-        .await
-        .map_err(|e| e.to_string())?;
+    let ws = tokio::time::timeout_at(
+        deadline,
+        tokio_tungstenite::accept_async_with_config(stream, Some(config)),
+    )
+    .await
+    .map_err(|_| "handshake timeout".to_string())?
+    .map_err(|e| e.to_string())?;
     let (mut sink, mut source) = ws.split();
 
     // Authenticate before touching shared state.
-    let hello = tokio::time::timeout(HELLO_TIMEOUT, next_msg(&mut source))
+    let hello = tokio::time::timeout_at(deadline, next_msg(&mut source))
         .await
         .map_err(|_| "hello timeout".to_string())?
         .map_err(|e| e.to_string())?;
@@ -235,12 +272,18 @@ mod tests {
     /// Test-only HMAC secret, exactly 32 bytes.
     const SECRET: &[u8] = b"net-test-secret-net-test-secret!";
 
+    /// Short limits, so timeout tests finish quickly.
+    const TEST_TIMEOUTS: Timeouts = Timeouts {
+        hello: Duration::from_millis(300),
+    };
+
     /// Starts a server with the default config on a random local port; returns its address.
     async fn start() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let core = Core::new(Config::default(), MatchboxIssuer::new("ws://mb").unwrap());
-        tokio::spawn(serve(listener, core, HmacValidator::new(SECRET).unwrap()));
+        let validator = HmacValidator::new(SECRET).unwrap();
+        tokio::spawn(serve_with(listener, core, validator, TEST_TIMEOUTS));
         addr
     }
 
@@ -306,5 +349,22 @@ mod tests {
 
         enqueue(&mut ws).await;
         assert!(matches!(recv(&mut ws).await, ServerMsg::Queued { .. }));
+    }
+
+    /// A TCP connection that never starts the WebSocket handshake is closed
+    /// by the server once the hello deadline passes.
+    #[tokio::test]
+    async fn silent_tcp_connection_is_closed() {
+        use tokio::io::AsyncReadExt;
+        let addr = start().await;
+        let mut tcp = TcpStream::connect(&addr).await.unwrap();
+        let mut buf = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), tcp.read(&mut buf))
+            .await
+            .expect("server closes the connection within 5 s");
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "connection closed, got {read:?}"
+        );
     }
 }
