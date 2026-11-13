@@ -86,6 +86,8 @@ while let Some(msg) = client.recv().await? {
 
 Lobbies work the same way with `CreateLobby`, `JoinLobby`, `SetMetadata`, `SetReady`, `StartMatch` and `LeaveLobby`; every member receives the full lobby state after each change, and a `HostMigrated` message when the host leaves and the next member in join order takes over.
 
+Keep calling `recv()` for as long as the connection should stay open, e.g. in its own task: polling is what answers the server's pings, and a client that stays silent for 60 seconds is dropped.
+
 Embedding the server instead of running the binary looks like this:
 
 ```rust
@@ -158,7 +160,7 @@ flowchart TB
 #### Network things to be aware of
 
 - The server speaks plain `ws://`. Put a reverse proxy (Caddy, nginx, Traefik, a cloud load balancer) in front that terminates TLS and forwards WebSocket upgrades, and keep `LOBBYISM_BIND` on `127.0.0.1` behind it; browsers on an `https://` page only allow `wss://` anyway.
-- A player waiting in a lobby can be silent for minutes, and the server doesn't send keepalive pings yet. Raise the proxy's idle or read timeout accordingly (nginx closes WebSockets after 60 seconds of silence by default, see `proxy_read_timeout`).
+- The server pings every client every 20 seconds and drops a client that sends nothing back (not even a pong) for 60 seconds, which is how players whose network vanished leave their lobby or queue. That ping traffic also keeps proxies happy: default idle timeouts such as nginx's 60 s `proxy_read_timeout` are fine, just don't set them below about 30 seconds.
 - `LOBBYISM_GAME_SERVERS` ends up inside every `ConnectToken`, and the renet server only accepts a token that lists one of its own `public_addresses`. So it has to be the address clients actually reach (not `0.0.0.0`, not a private IP behind NAT), and it has to match the game server's configuration exactly. The game server's UDP port needs to be open separately; the lobby only needs its TCP port.
 - Lobby tokens and `ConnectToken`s both carry expiry times, and a `ConnectToken` has to be used within `expire_seconds` (30 in the binary). Keep the lobby, the game server and your auth backend on NTP, or players will get rejected for no visible reason.
 - Every connected player holds one file descriptor, and many Linux systems allow only 1024 per process by default. Raise the limit for the lobby (`LimitNOFILE=` in a systemd unit, `ulimit -n` otherwise) well above the number of players you expect; when it runs out, new connections are refused until others close.

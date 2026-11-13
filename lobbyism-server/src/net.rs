@@ -25,11 +25,20 @@ struct Timeouts {
     /// Deadline from accepting the TCP connection to receiving `Hello`,
     /// WebSocket handshake included.
     hello: Duration,
+    /// Interval of the server's WebSocket pings.
+    ping: Duration,
+    /// A client that sends nothing for this long, not even a pong, counts as gone.
+    idle: Duration,
+    /// Longest time one outgoing frame may take; a peer that stops reading counts as gone.
+    send: Duration,
 }
 
 /// The limits `serve` uses; tests run with shorter ones.
 const TIMEOUTS: Timeouts = Timeouts {
     hello: Duration::from_secs(10),
+    ping: Duration::from_secs(20),
+    idle: Duration::from_secs(60),
+    send: Duration::from_secs(10),
 };
 
 /// State shared by all connections, behind one mutex.
@@ -50,7 +59,9 @@ impl<I> Shared<I> {
                 continue;
             };
             if tx.try_send(msg).is_err() {
-                // Dropping the sender ends the writer task, which closes the socket.
+                // Dropping the sender lets the writer flush what's queued and stop;
+                // a writer stuck on a dead peer stops at the send timeout. Either
+                // way the connection's read loop then ends and removes the player.
                 tracing::warn!(player, "client outbox full or closed; dropping session");
                 self.sessions.remove(&player);
             }
@@ -131,7 +142,7 @@ async fn connection<I: TicketIssuer>(
     let (mut sink, mut source) = ws.split();
 
     // Authenticate before touching shared state.
-    let hello = tokio::time::timeout_at(deadline, next_msg(&mut source))
+    let hello = tokio::time::timeout_at(deadline, next_msg(&mut source, timeouts.idle))
         .await
         .map_err(|_| "hello timeout".to_string())?
         .map_err(|e| e.to_string())?;
@@ -176,19 +187,31 @@ async fn connection<I: TicketIssuer>(
         return Err(message);
     }
 
+    // The writer also pings, so a vanished client (no TCP close, e.g. a phone
+    // losing signal) stops producing pongs and the read loop's idle timeout fires.
     let mut writer = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if sink.send(encode(&msg)).await.is_err() {
-                break;
+        let first_ping = tokio::time::Instant::now() + timeouts.ping;
+        let mut ping = tokio::time::interval_at(first_ping, timeouts.ping);
+        loop {
+            let frame = tokio::select! {
+                msg = rx.recv() => match msg {
+                    Some(msg) => encode(&msg),
+                    None => break,
+                },
+                _ = ping.tick() => Message::Ping(Vec::new().into()),
+            };
+            match tokio::time::timeout(timeouts.send, sink.send(frame)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => break,
             }
         }
-        let _ = sink.close().await;
+        let _ = tokio::time::timeout(timeouts.send, sink.close()).await;
     });
 
     let result = loop {
         let next = tokio::select! {
-            next = next_msg(&mut source) => next,
-            // Writer stopped: socket broken or session dropped as too slow.
+            next = next_msg(&mut source, timeouts.idle) => next,
+            // Writer stopped: socket broken, peer not reading, or session dropped as too slow.
             _ = &mut writer => break Err("writer closed".into()),
         };
         let out = match next {
@@ -232,13 +255,17 @@ impl std::fmt::Display for ReadError {
     }
 }
 
-/// Next client message; `Ok(None)` on a clean close.
-async fn next_msg<S>(source: &mut S) -> Result<Option<ClientMsg>, ReadError>
+/// Next client message; `Ok(None)` on a clean close. Fails when no frame at
+/// all (pongs included) arrives within `idle`.
+async fn next_msg<S>(source: &mut S, idle: Duration) -> Result<Option<ClientMsg>, ReadError>
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     loop {
-        match source.next().await {
+        let Ok(frame) = tokio::time::timeout(idle, source.next()).await else {
+            return Err(ReadError::Fatal("idle timeout".into()));
+        };
+        match frame {
             None | Some(Ok(Message::Close(_))) => return Ok(None),
             Some(Ok(Message::Text(text))) => {
                 return serde_json::from_str(&text)
@@ -275,6 +302,9 @@ mod tests {
     /// Short limits, so timeout tests finish quickly.
     const TEST_TIMEOUTS: Timeouts = Timeouts {
         hello: Duration::from_millis(300),
+        ping: Duration::from_millis(100),
+        idle: Duration::from_millis(300),
+        send: Duration::from_millis(300),
     };
 
     /// Starts a server with the default config on a random local port; returns its address.
@@ -366,5 +396,54 @@ mod tests {
             matches!(read, Ok(0) | Err(_)),
             "connection closed, got {read:?}"
         );
+    }
+
+    /// The next text message within `wait`, or `None`; answers pings meanwhile
+    /// by polling the stream.
+    async fn try_recv(ws: &mut Client, wait: Duration) -> Option<ServerMsg> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, ws.next()).await {
+                Err(_) => return None,
+                Ok(Some(Ok(Message::Text(text)))) => {
+                    return Some(serde_json::from_str(&text).unwrap());
+                }
+                Ok(Some(Ok(_))) => continue,
+                Ok(other) => panic!("connection ended: {other:?}"),
+            }
+        }
+    }
+
+    /// A queued client that stops responding (no pongs, no close) is removed
+    /// from the queue, so the next player is not matched with it.
+    #[tokio::test]
+    async fn vanished_client_is_not_matched() {
+        let addr = start().await;
+        let mut gone = login(&addr, 1).await;
+        enqueue(&mut gone).await;
+        assert!(matches!(recv(&mut gone).await, ServerMsg::Queued { .. }));
+        // From here on `gone` is never polled again, like a peer whose network vanished.
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut next = login(&addr, 2).await;
+        enqueue(&mut next).await;
+        assert!(matches!(recv(&mut next).await, ServerMsg::Queued { .. }));
+        let matched = try_recv(&mut next, Duration::from_secs(1)).await;
+        assert_eq!(matched, None, "matched with a vanished player");
+        drop(gone);
+    }
+
+    /// A client that keeps polling answers the pings and outlives the idle timeout.
+    #[tokio::test]
+    async fn responsive_client_outlives_idle_timeout() {
+        let addr = start().await;
+        let mut ws = login(&addr, 1).await;
+        enqueue(&mut ws).await;
+        assert!(matches!(recv(&mut ws).await, ServerMsg::Queued { .. }));
+
+        // Several idle periods long; polling answers the server's pings.
+        assert_eq!(try_recv(&mut ws, Duration::from_secs(1)).await, None);
+        send(&mut ws, &ClientMsg::CancelQueue).await;
+        assert_eq!(recv(&mut ws).await, ServerMsg::Dequeued);
     }
 }

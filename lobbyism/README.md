@@ -35,6 +35,8 @@ while let Some(msg) = client.recv().await? {
 
 Lobbies work the same way with `CreateLobby`, `JoinLobby`, `SetMetadata`, `SetReady`, `StartMatch` and `LeaveLobby`. Every member receives the full lobby state after each change, and a `HostMigrated` message when the host leaves and the next member in join order takes over.
 
+Keep calling `recv()` for as long as the connection should stay open, e.g. in its own task: polling is what answers the server's pings, and a client that stays silent for 60 seconds is dropped.
+
 ## Features
 
 - `client` (default): the async WebSocket client, `LobbyClient`.

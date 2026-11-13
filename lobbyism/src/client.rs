@@ -47,6 +47,10 @@ impl From<serde_json::Error> for Error {
 }
 
 /// An authenticated connection to the lobby server.
+///
+/// Keep calling [`LobbyClient::recv`] while the connection should stay open:
+/// polling answers the server's WebSocket pings, and the server drops a client
+/// that sends nothing, pongs included, for 60 seconds.
 pub struct LobbyClient {
     /// The underlying WebSocket, carrying JSON text frames.
     ws: WebSocketStream,
