@@ -37,7 +37,7 @@ tracing-subscriber = { version = "0.3", optional = true }
 getrandom = "0.4"
 dotenvy = { version = "0.15.7", optional = true }
 if-addrs = { version = "0.15", optional = true }
-mdns-sd = { version = "0.21", optional = true }
+mdns-sd = { version = "0.22", optional = true }
 
 [[bin]]
 name = "lobbyism-server"
